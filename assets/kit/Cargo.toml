@@ -1,0 +1,43 @@
+# The storybook kit is its own Cargo workspace: it is vendored into a host
+# repo under `storybook/kit/` and must stay independent of any host crate
+# (SkillCraft is just the first host).
+[workspace]
+resolver = "3"
+members = ["viewer"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+
+[package]
+name = "storybook-kit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "libadwaita storybook kit: the language-neutral `sbk` checker CLI"
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "1"
+clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "storybook_kit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sbk"
+path = "src/main.rs"
+
+# Faster mutant/test cycles; the kit ships no debugger story of its own.
+[profile.dev]
+debug = 0

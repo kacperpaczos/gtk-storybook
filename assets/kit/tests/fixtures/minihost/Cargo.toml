@@ -1,0 +1,14 @@
+[workspace]
+members = ["nested"]
+
+[package]
+name = "minihost"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Fixture host: three views in the VM/build/actions style, no GTK"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nestedhost = { path = "nested" }
