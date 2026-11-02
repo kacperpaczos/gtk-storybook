@@ -790,6 +790,21 @@ pub fn build(vm: &PanelVm, _actions: &PanelActions) -> Widget {
         let msg = structural_drift(Some(&fixture.skel), drifted).unwrap();
         assert!(msg.contains("size class"), "{msg}");
     }
+
+    // an axis pinned to `empty` keeps the list empty
+    let empty = Cell {
+        view: "panel".into(),
+        state_id: "panel/empty".into(),
+        assignment: BTreeMap::from([("files".to_string(), "empty".to_string())]),
+    };
+    let skel = skeletons(&report, std::slice::from_ref(&empty));
+    let fixture = skel.get("panel").unwrap().get("empty").unwrap();
+    assert_eq!(
+        structural_drift(Some(&fixture.skel), r#"{"files": []}"#),
+        None
+    );
+    let msg = structural_drift(Some(&fixture.skel), r#"{"files": [{"name": "a"}]}"#).unwrap();
+    assert!(msg.contains("size class"), "{msg}");
 }
 
 /// A field with `#[serde(default)]` is a normal axis (bool -> false/true)
@@ -882,4 +897,19 @@ pub fn build(vm: &PanelVm, _actions: &PanelActions) -> Widget {
             .unwrap()
             .contains("agent_available")
     );
+}
+
+#[test]
+fn drift_rejects_an_enum_object_with_two_variant_keys() {
+    let skel = Skel::Enum {
+        chosen: 0,
+        pinned: false,
+        variants: vec![
+            ("User".into(), Some(Skel::Obj(vec![]))),
+            ("Agent".into(), Some(Skel::Obj(vec![]))),
+        ],
+    };
+    assert_eq!(structural_drift(Some(&skel), r#"{"Agent":{}}"#), None);
+    let msg = structural_drift(Some(&skel), r#"{"Agent":{},"User":{}}"#).unwrap();
+    assert!(msg.contains("expected a variant"), "{msg}");
 }
