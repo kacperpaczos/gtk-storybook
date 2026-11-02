@@ -242,7 +242,7 @@ fn drift_checker_flags_missing_extra_retyped_keys_and_buckets() {
         (
             "c".into(),
             Skel::Arr {
-                bucket: Bucket::Empty,
+                bucket: Some(Bucket::Empty),
                 item: Box::new(Skel::Num(0.0)),
             },
         ),
@@ -292,7 +292,7 @@ fn drift_checker_flags_int_float_char_map_and_tuple_shapes() {
         (
             "m".into(),
             Skel::Map {
-                bucket: Bucket::One,
+                bucket: Some(Bucket::One),
                 value: Box::new(Skel::Int(0)),
             },
         ),
@@ -338,6 +338,8 @@ fn drift_checker_flags_int_float_char_map_and_tuple_shapes() {
 
 /// Fields whose serde representation the extractor cannot model are omitted
 /// from the skeleton: the curator writes them by hand against the finding.
+/// A `#[serde(default)]` field is fully represented instead: generated
+/// with its normal value, optional in curated fixtures.
 #[test]
 fn limited_fields_are_omitted_from_skeletons() {
     let dir = minihost_copy("gen-limited");
@@ -387,7 +389,22 @@ pub fn build(vm: &PanelVm, _actions: &PanelActions) -> Widget {
     let json: serde_json::Value = serde_json::from_str(&fixture.json).unwrap();
     let object = json.as_object().unwrap();
     assert!(!object.contains_key("meta"), "{json}");
-    assert!(!object.contains_key("hint"), "{json}");
+    assert!(object.contains_key("hint"), "{json}");
+    assert_eq!(
+        structural_drift(Some(&fixture.skel), &fixture.json),
+        None,
+        "generated fixture carries the default field"
+    );
+    let without_hint = {
+        let mut v = json.clone();
+        v.as_object_mut().unwrap().remove("hint");
+        serde_json::to_string(&v).unwrap()
+    };
+    assert_eq!(
+        structural_drift(Some(&fixture.skel), &without_hint),
+        None,
+        "a curated fixture may omit a serde(default) key"
+    );
     assert!(object.contains_key("title"), "{json}");
 }
 
@@ -426,6 +443,7 @@ fn option_bool_some_skeleton_is_a_present_false() {
                     feature_gated: false,
                     has_dyn: false,
                     limited: None,
+                    optional: false,
                 }],
             },
         )]),
@@ -490,7 +508,7 @@ fn drift_accepts_any_enum_variant_in_a_collection() {
     let skel = Skel::Obj(vec![(
         "items".into(),
         Skel::Arr {
-            bucket: Bucket::Many,
+            bucket: Some(Bucket::Many),
             item: Box::new(Skel::Enum {
                 chosen: 0,
                 pinned: false,
@@ -517,7 +535,7 @@ fn drift_rejects_an_unknown_enum_variant() {
     let skel = Skel::Obj(vec![(
         "items".into(),
         Skel::Arr {
-            bucket: Bucket::One,
+            bucket: Some(Bucket::One),
             item: Box::new(Skel::Enum {
                 chosen: 0,
                 pinned: false,
@@ -542,7 +560,7 @@ fn drift_checks_the_chosen_variants_payload() {
     let skel = Skel::Obj(vec![(
         "items".into(),
         Skel::Arr {
-            bucket: Bucket::One,
+            bucket: Some(Bucket::One),
             item: Box::new(Skel::Enum {
                 chosen: 0,
                 pinned: false,
@@ -645,5 +663,223 @@ fn drift_keeps_an_axis_enum_pinned_to_the_cells_variant() {
     assert!(
         msg.contains("Ok") && msg.contains("allowed: Failed"),
         "{msg}"
+    );
+}
+
+/// A collection nested inside a non-axis value (files inside the `some`
+/// payload of an `Option<Proposal>` axis) pins no size class: a curated
+/// fixture may show any number of files, each still checked against the
+/// item skeleton.
+#[test]
+fn drift_allows_any_length_for_a_non_axis_collection() {
+    let dir = minihost_copy("gen-non-axis-collection");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        r#"pub mod gtk { pub struct Widget; }
+pub mod panel;
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/panel.rs"),
+        r#"use crate::gtk::Widget;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct File {
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Proposal {
+    pub files: Vec<File>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PanelVm {
+    pub proposal: Option<Proposal>,
+    pub title: String,
+}
+
+pub struct PanelActions;
+
+pub fn build(vm: &PanelVm, _actions: &PanelActions) -> Widget {
+    let _ = (&vm.proposal, &vm.title);
+    Widget
+}
+"#,
+    )
+    .unwrap();
+    let report = scan(&dir);
+    let cell = Cell {
+        view: "panel".into(),
+        state_id: "panel/some-any".into(),
+        assignment: BTreeMap::from([
+            ("proposal".to_string(), "some".to_string()),
+            ("title".to_string(), "any".to_string()),
+        ]),
+    };
+    let skel = skeletons(&report, std::slice::from_ref(&cell));
+    let fixture = skel.get("panel").unwrap().get("some-any").unwrap();
+    assert_eq!(structural_drift(Some(&fixture.skel), &fixture.json), None);
+    let many =
+        r#"{"proposal": {"files": [{"name": "a"}, {"name": "b"}, {"name": "c"}]}, "title": "t"}"#;
+    assert_eq!(structural_drift(Some(&fixture.skel), many), None);
+    let none = r#"{"proposal": {"files": []}, "title": "t"}"#;
+    assert_eq!(structural_drift(Some(&fixture.skel), none), None);
+    // any length, but every element still matches the item skeleton
+    let bad_item = r#"{"proposal": {"files": [{"name": 7}]}, "title": "t"}"#;
+    assert!(
+        structural_drift(Some(&fixture.skel), bad_item)
+            .unwrap()
+            .contains("files")
+    );
+}
+
+/// A collection that IS the axis of the cell keeps its size class: the
+/// class is what the cell exists to show.
+#[test]
+fn drift_still_pins_size_class_of_an_axis_collection() {
+    let dir = minihost_copy("gen-axis-collection");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        r#"pub mod gtk { pub struct Widget; }
+pub mod panel;
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/panel.rs"),
+        r#"use crate::gtk::Widget;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct File {
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PanelVm {
+    pub files: Vec<File>,
+}
+
+pub struct PanelActions;
+
+pub fn build(vm: &PanelVm, _actions: &PanelActions) -> Widget {
+    let _ = vm.files.len();
+    Widget
+}
+"#,
+    )
+    .unwrap();
+    let report = scan(&dir);
+    let cell = Cell {
+        view: "panel".into(),
+        state_id: "panel/one".into(),
+        assignment: BTreeMap::from([("files".to_string(), "one".to_string())]),
+    };
+    let skel = skeletons(&report, std::slice::from_ref(&cell));
+    let fixture = skel.get("panel").unwrap().get("one").unwrap();
+    assert_eq!(structural_drift(Some(&fixture.skel), &fixture.json), None);
+    let curated = r#"{"files": [{"name": "one"}]}"#;
+    assert_eq!(structural_drift(Some(&fixture.skel), curated), None);
+    for drifted in [
+        r#"{"files": []}"#,
+        r#"{"files": [{"name": "a"}, {"name": "b"}]}"#,
+    ] {
+        let msg = structural_drift(Some(&fixture.skel), drifted).unwrap();
+        assert!(msg.contains("size class"), "{msg}");
+    }
+}
+
+/// A field with `#[serde(default)]` is a normal axis (bool -> false/true)
+/// and the generated fixture carries the key; a curated fixture may omit
+/// the key (serde fills the default) or carry any value of its skeleton.
+/// A struct-level `#[serde(default)]` makes every field of the struct
+/// optional the same way.
+#[test]
+fn drift_accepts_a_serde_default_field_present_or_absent() {
+    let dir = minihost_copy("gen-serde-default");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        r#"pub mod gtk { pub struct Widget; }
+pub mod panel;
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/panel.rs"),
+        r#"use crate::gtk::Widget;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+pub struct Meta {
+    pub tag: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PanelVm {
+    #[serde(default)]
+    pub agent_available: bool,
+    #[serde(default = "make_hint")]
+    pub hint: String,
+    pub meta: Meta,
+    pub title: String,
+}
+
+fn make_hint() -> String {
+    String::new()
+}
+
+pub struct PanelActions;
+
+pub fn build(vm: &PanelVm, _actions: &PanelActions) -> Widget {
+    let _ = (&vm.agent_available, &vm.hint, &vm.meta.tag, &vm.title);
+    Widget
+}
+"#,
+    )
+    .unwrap();
+    let report = scan(&dir);
+    let cell = Cell {
+        view: "panel".into(),
+        state_id: "panel/true".into(),
+        assignment: BTreeMap::from([
+            ("agent_available".to_string(), "true".to_string()),
+            ("hint".to_string(), "any".to_string()),
+            ("meta.tag".to_string(), "any".to_string()),
+            ("title".to_string(), "any".to_string()),
+        ]),
+    };
+    let skel = skeletons(&report, std::slice::from_ref(&cell));
+    let fixture = skel.get("panel").unwrap().get("true").unwrap();
+    let value: serde_json::Value = serde_json::from_str(&fixture.json).unwrap();
+    // generated fixtures include the optional keys
+    assert!(value.get("agent_available").is_some(), "{value}");
+    assert!(value.get("hint").is_some(), "{value}");
+    assert_eq!(structural_drift(Some(&fixture.skel), &fixture.json), None);
+    // a curated fixture may omit any of them (including the struct-level
+    // default making meta.tag optional)
+    let set = |v: serde_json::Value| serde_json::to_string(&v).unwrap();
+    for key in ["agent_available", "hint"] {
+        let mut v = value.clone();
+        v.as_object_mut().unwrap().remove(key);
+        assert_eq!(
+            structural_drift(Some(&fixture.skel), &set(v)),
+            None,
+            "omitting {key} must not drift"
+        );
+    }
+    let mut v = value.clone();
+    v["meta"].as_object_mut().unwrap().remove("tag");
+    assert_eq!(structural_drift(Some(&fixture.skel), &set(v)), None);
+    // present values must still match the skeleton
+    let mut v = value;
+    v["agent_available"] = serde_json::json!("yes");
+    assert!(
+        structural_drift(Some(&fixture.skel), &set(v))
+            .unwrap()
+            .contains("agent_available")
     );
 }

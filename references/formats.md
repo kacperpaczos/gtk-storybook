@@ -18,7 +18,12 @@ storybook/
 
   Curated fixtures may use any declared variant of an enum (in a field,
   option, collection or map); the chosen variant's payload must match the
-  skeleton, and an unknown variant name is drift.
+  skeleton, and an unknown variant name is drift. A collection's size
+  class applies only when the collection is an axis of the view; any
+  other collection or map may have any length (elements still checked).
+  A field with `#[serde(default)]` may be omitted from a curated fixture
+  or present with any value matching its skeleton; generated fixtures
+  include the key.
 
 ## views.toml
 ```toml

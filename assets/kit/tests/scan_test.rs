@@ -560,31 +560,92 @@ pub fn build(vm: &PanelVm, _actions: &PanelActions) -> Widget {
     let inv = scan(&dir).inventory;
     let limits = findings(&inv, "panel", "extractor-limit");
     // one finding for the renamed type, one per affected field (the type
-    // finding plus the field whose representation depends on it)
     let details: Vec<&str> = limits.iter().map(|f| f.detail.as_str()).collect();
-    assert_eq!(limits.len(), 3, "{details:?}");
+    // one finding for the renamed type, one for the field whose
+    // representation depends on it; `#[serde(default)]` is no longer a
+    // limit: the field is recorded as an optional axis instead
+    assert_eq!(limits.len(), 2, "{details:?}");
     assert!(
         details
             .iter()
             .any(|d| d.contains("Meta") && d.contains("rename_all"))
     );
     assert!(details.iter().any(|d| d.contains("field 'meta'")));
-    assert!(
-        details
-            .iter()
-            .any(|d| d.contains("hint") && d.contains("default"))
-    );
     // every finding points at the offending declaration
     assert!(
         limits
             .iter()
             .all(|f| f.location.starts_with("src/panel.rs:"))
     );
-    // the affected fields are not axes: the checker refuses to invent a
-    // representation it cannot model; clean fields stay axes
+    // the limited field is not an axis; the serde-default field and the
+    // clean fields are (hint carries its normal text axis)
     let panel = inv.views.iter().find(|v| v.id == "panel").unwrap();
     let paths: Vec<&str> = panel.axes.iter().map(|a| a.path.as_str()).collect();
-    assert_eq!(paths, vec!["wire", "title"]);
+    assert_eq!(paths, vec!["wire", "hint", "title"]);
+}
+
+/// A field with `#[serde(default)]` (or `default = "…"`, or a struct-level
+/// `#[serde(default)]` on a nested struct) keeps its normal skeleton and
+/// becomes a normal axis; the drift gate later accepts the key absent.
+#[test]
+fn scan_records_serde_default_field_as_optional_axis() {
+    let dir = minihost_copy("scan-serde-default");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        r#"pub mod gtk { pub struct Widget; }
+pub mod panel;
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/panel.rs"),
+        r#"use crate::gtk::Widget;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+pub struct Meta {
+    pub tag: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PanelVm {
+    #[serde(default)]
+    pub agent_available: bool,
+    #[serde(default = "make_hint")]
+    pub hint: String,
+    pub meta: Meta,
+    pub title: String,
+}
+
+fn make_hint() -> String {
+    String::new()
+}
+
+pub struct PanelActions;
+
+pub fn build(vm: &PanelVm, _actions: &PanelActions) -> Widget {
+    let _ = (&vm.agent_available, &vm.hint, &vm.meta.tag, &vm.title);
+    Widget
+}
+"#,
+    )
+    .unwrap();
+    let inv = scan(&dir).inventory;
+    assert!(
+        findings(&inv, "panel", "extractor-limit").is_empty(),
+        "{:?}",
+        inv.findings
+    );
+    assert_eq!(
+        kinds_axes(&inv, "panel"),
+        owned(vec![
+            ("agent_available", AxisKind::Bool, vec!["false", "true"]),
+            ("hint", AxisKind::Text, vec!["any"]),
+            ("meta.tag", AxisKind::Text, vec!["any"]),
+            ("title", AxisKind::Text, vec!["any"]),
+        ])
+    );
 }
 
 /// A view fn at the crate root would collide with the crate name, so its

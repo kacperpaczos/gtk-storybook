@@ -9,9 +9,10 @@
 //! take a *sub-struct* of the VM instead of the whole VM do not project;
 //! reads inside macros (e.g. `glib::clone!` callbacks) are invisible and
 //! surface as `macro` findings; serde attributes that change the wire
-//! representation (rename_all, tag, untagged, skip, default) are reported
+//! representation (rename_all, rename, tag, untagged, skip) are reported
 //! as `extractor-limit` findings and their fields carry no generated
-//! fixture value.
+//! fixture value. `#[serde(default)]` is not a limit: the field keeps
+//! its skeleton and is recorded as optional (the key may be absent).
 
 use crate::model::{Axis, AxisKind, Finding, Inventory, ViewInfo};
 use crate::{sha_hex, snake_case};
@@ -75,8 +76,10 @@ const INT_NUMBERS: &[&str] = &[
 const FLOAT_NUMBERS: &[&str] = &["f32", "f64"];
 /// Serde attributes that change the wire representation and that this
 /// syntax-level extractor refuses to model (`references/discovery.md`:
-/// whatever it cannot resolve is a finding, never a guess).
-const SERDE_LIMITS: &[&str] = &["rename_all", "rename", "tag", "untagged", "skip", "default"];
+/// whatever it cannot resolve is a finding, never a guess). `default`
+/// is not a limit: it only lets a key be absent, which the skeleton
+/// records as an optional field.
+const SERDE_LIMITS: &[&str] = &["rename_all", "rename", "tag", "untagged", "skip"];
 
 // ---------------------------------------------------------------------------
 // type shapes
@@ -92,6 +95,9 @@ pub struct FieldInfo {
     /// Why the wire representation cannot be modeled (serde attributes on
     /// the field or on a type it mentions); `None` = modelable.
     pub limited: Option<String>,
+    /// `#[serde(default)]` on the field or on its struct: generated
+    /// fixtures carry the key, curated ones may omit it.
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +177,9 @@ struct RawType {
     kind: RawKind,
     /// Item-level serde attributes this extractor does not model.
     limits: Vec<String>,
+    /// `#[serde(default)]` at item level: every field of the struct may
+    /// be absent from a fixture.
+    default_fields: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -188,6 +197,8 @@ struct RawField {
     has_dyn: bool,
     /// Field-level serde attributes this extractor does not model.
     limits: Vec<String>,
+    /// `#[serde(default)]` / `#[serde(default = "…")]` on this field.
+    serde_default: bool,
 }
 
 /// A variant payload as written: one unnamed field, several unnamed fields
@@ -634,6 +645,7 @@ fn collect_types(
                             tokens: s.to_token_stream().to_string(),
                             kind: RawKind::Struct(fields),
                             limits: serde_limits(&s.attrs),
+                            default_fields: has_serde_default(&s.attrs),
                         },
                     );
                     index.entry(name).or_default().push(key);
@@ -676,6 +688,7 @@ fn collect_types(
                             tokens: e.to_token_stream().to_string(),
                             kind: RawKind::Enum(variants),
                             limits: serde_limits(&e.attrs),
+                            default_fields: false,
                         },
                     );
                     index.entry(name).or_default().push(key);
@@ -699,6 +712,7 @@ fn raw_field(f: &syn::Field, rel: &str) -> RawField {
         feature_gated: is_feature_gated(f),
         has_dyn: has_dyn(&f.ty),
         limits: serde_limits(&f.attrs),
+        serde_default: has_serde_default(&f.attrs),
     }
 }
 
@@ -738,6 +752,16 @@ fn serde_limits(attrs: &[syn::Attribute]) -> Vec<String> {
         .filter(|needle| text.contains(*needle))
         .map(|needle| (*needle).to_string())
         .collect()
+}
+
+/// `#[serde(default)]` or `#[serde(default = "…")]`: the wire shape is
+/// unchanged, the key may simply be absent — recorded as an optional
+/// field, never a limit.
+fn has_serde_default(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|a| a.path().is_ident("serde"))
+        .any(|a| a.to_token_stream().to_string().contains("default"))
 }
 
 fn is_public(vis: &syn::Visibility) -> bool {
@@ -824,7 +848,10 @@ impl Resolver<'_> {
     fn raw_shape(&mut self, raw: &RawType, stack: &mut Vec<String>) -> TypeShape {
         match &raw.kind {
             RawKind::Struct(fields) => TypeShape::Struct {
-                fields: fields.iter().map(|f| self.field_info(f, stack)).collect(),
+                fields: fields
+                    .iter()
+                    .map(|f| self.field_info(f, raw.default_fields, stack))
+                    .collect(),
             },
             RawKind::Enum(variants) => TypeShape::Enum {
                 variants: variants
@@ -837,7 +864,10 @@ impl Resolver<'_> {
                                 srcs.iter().map(|s| self.src(s, stack)).collect(),
                             )),
                             Some(RawPayload::Struct(fields)) => Some(TypeShape::Struct {
-                                fields: fields.iter().map(|f| self.field_info(f, stack)).collect(),
+                                fields: fields
+                                    .iter()
+                                    .map(|f| self.field_info(f, false, stack))
+                                    .collect(),
                             }),
                             None => None,
                         },
@@ -847,7 +877,12 @@ impl Resolver<'_> {
         }
     }
 
-    fn field_info(&mut self, f: &RawField, stack: &mut Vec<String>) -> FieldInfo {
+    fn field_info(
+        &mut self,
+        f: &RawField,
+        struct_default: bool,
+        stack: &mut Vec<String>,
+    ) -> FieldInfo {
         let shape = self.src(&f.type_src, stack);
         FieldInfo {
             name: f.name.clone(),
@@ -856,6 +891,7 @@ impl Resolver<'_> {
             feature_gated: f.feature_gated,
             has_dyn: f.has_dyn,
             limited: self.field_limit(f),
+            optional: f.serde_default || struct_default,
         }
     }
 
@@ -1725,6 +1761,7 @@ mod tests {
             tokens: String::new(),
             kind,
             limits: Vec::new(),
+            default_fields: false,
         }
     }
 
@@ -1739,6 +1776,7 @@ mod tests {
                     feature_gated: false,
                     has_dyn: false,
                     limits: Vec::new(),
+                    serde_default: false,
                 })
                 .collect(),
         )

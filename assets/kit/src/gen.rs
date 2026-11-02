@@ -40,14 +40,20 @@ pub enum Skel {
     Char,
     Str(String),
     Arr {
-        bucket: Bucket,
+        /// Size class of a collection that is an axis of this cell
+        /// (`Some`); a collection no axis pins accepts any length.
+        bucket: Option<Bucket>,
         item: Box<Skel>,
     },
-    /// A JSON object whose key count follows the bucket (maps).
+    /// A JSON object whose key count follows the bucket — `Some` only for
+    /// a map that is an axis of this cell; otherwise any key count.
     Map {
-        bucket: Bucket,
+        bucket: Option<Bucket>,
         value: Box<Skel>,
     },
+    /// A field with `#[serde(default)]`: generated fixtures carry the
+    /// key with the inner skeleton's value; curated fixtures may omit it.
+    Opt(Box<Skel>),
     /// A JSON array of an exact length (tuples, fixed arrays).
     Tup(Vec<Skel>),
     /// An externally tagged enum: `chosen` is the variant the generated
@@ -148,7 +154,15 @@ fn skel_for(
                     } else {
                         format!("{path}.{}", f.name)
                     };
-                    (f.name.clone(), skel_for(&f.shape, view, &child, assignment))
+                    let skel = skel_for(&f.shape, view, &child, assignment);
+                    (
+                        f.name.clone(),
+                        if f.optional {
+                            Skel::Opt(Box::new(skel))
+                        } else {
+                            skel
+                        },
+                    )
                 })
                 .collect(),
         ),
@@ -180,11 +194,11 @@ fn skel_for(
             }
         }
         TypeShape::Collection(item) => Skel::Arr {
-            bucket: bucket_of(class),
+            bucket: pinned_bucket(assignment, path),
             item: Box::new(skel_for(item, view, path, assignment)),
         },
         TypeShape::Map { value, .. } => Skel::Map {
-            bucket: bucket_of(class),
+            bucket: pinned_bucket(assignment, path),
             value: Box::new(skel_for(value, view, path, assignment)),
         },
     }
@@ -217,11 +231,17 @@ fn enum_skel(
     }
 }
 
-fn bucket_of(class: Option<&str>) -> Bucket {
-    match class {
-        Some("one") => Bucket::One,
-        Some("many") => Bucket::Many,
-        _ => Bucket::Empty,
+/// The size class of a collection that is an axis of this cell (the class
+/// `scan`/`expand` recorded for the path); a collection no axis pins has
+/// no size class and accepts any length.
+fn pinned_bucket(assignment: &BTreeMap<String, String>, path: &str) -> Option<Bucket> {
+    match assignment.get(path)?.as_str() {
+        "empty" => Some(Bucket::Empty),
+        "one" => Some(Bucket::One),
+        "many" => Some(Bucket::Many),
+        // a non-size class at this path (`some` of an Option<Vec>, an
+        // enum variant) never pins a length
+        _ => None,
     }
 }
 
@@ -248,10 +268,13 @@ fn to_value(skel: &Skel) -> Value {
         Skel::Num(n) => serde_json::json!(n),
         Skel::Char => Value::String("a".into()),
         Skel::Str(s) => Value::String(s.clone()),
-        Skel::Arr { bucket, item } => Value::Array(vec![to_value(item); bucket_len(bucket)]),
+        Skel::Opt(inner) => to_value(inner),
+        Skel::Arr { bucket, item } => {
+            Value::Array(vec![to_value(item); bucket.as_ref().map_or(0, bucket_len)])
+        }
         Skel::Map { bucket, value } => {
             let mut map = serde_json::Map::new();
-            for i in 0..bucket_len(bucket) {
+            for i in 0..bucket.as_ref().map_or(0, bucket_len) {
                 map.insert(format!("k{i}"), to_value(value));
             }
             Value::Object(map)
@@ -285,7 +308,8 @@ fn bucket_len(bucket: &Bucket) -> usize {
 
 /// Structural drift between a skeleton and a (possibly curated) fixture.
 /// `None` = no drift. Scalar values are ignored; key sets, JSON types,
-/// collection size classes and null-ness must match.
+/// pinned collection size classes and null-ness must match; a
+/// serde-default key may be absent.
 pub fn structural_drift(expected: Option<&Skel>, actual: &str) -> Option<String> {
     let Some(expected) = expected else {
         return Some("missing skeleton (view not in inventory)".to_string());
@@ -345,7 +369,10 @@ fn drift(skel: &Skel, value: &Value, path: &str) -> Option<String> {
             let Some(items) = value.as_array() else {
                 return Some(format!("{path}: expected array"));
             };
-            if bucket_of_len(items.len()) != *bucket {
+            // only a pinned (axis) collection keeps its size class
+            if let Some(bucket) = bucket
+                && bucket_of_len(items.len()) != *bucket
+            {
                 return Some(format!("{path}: collection changed size class"));
             }
             items
@@ -353,6 +380,8 @@ fn drift(skel: &Skel, value: &Value, path: &str) -> Option<String> {
                 .enumerate()
                 .find_map(|(i, v)| drift(item, v, &format!("{path}[{i}]")))
         }
+
+        Skel::Opt(inner) => drift(inner, value, path),
         Skel::Map {
             bucket,
             value: item,
@@ -360,7 +389,9 @@ fn drift(skel: &Skel, value: &Value, path: &str) -> Option<String> {
             let Some(map) = value.as_object() else {
                 return Some(format!("{path}: expected object (map)"));
             };
-            if bucket_of_len(map.len()) != *bucket {
+            if let Some(bucket) = bucket
+                && bucket_of_len(map.len()) != *bucket
+            {
                 return Some(format!("{path}: map changed size class"));
             }
             map.values()
@@ -434,6 +465,8 @@ fn drift(skel: &Skel, value: &Value, path: &str) -> Option<String> {
             };
             for (key, child) in fields {
                 match map.get(key) {
+                    // a serde-default key may be absent entirely
+                    None if matches!(child, Skel::Opt(_)) => continue,
                     None => return Some(format!("{path}.{key}: missing key")),
                     Some(v) => {
                         if let Some(problem) = drift(child, v, &format!("{path}.{key}")) {

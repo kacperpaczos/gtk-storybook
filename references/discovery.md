@@ -21,11 +21,13 @@ Only fields a view actually reads (code, bindings, expressions) become axes; unr
 | operation phase (only when the VM models one) | `idle`, `pending`, `ok`, `err` |
 | string / number | `any` until the agent declares boundary classes (`empty`, `short`, `overflow`, `invalid`…) |
 | page / visible-child name | one class per page |
-| nested record | its read fields, recursively |
+
+A collection's size class pins a cell only when the collection itself is one of the view's axes; a collection nested inside another value (e.g. `proposal.files` inside `Option<Proposal>`) accepts any length — every element is still checked against the element skeleton. Fields with `#[serde(default)]` (also `default = "…"`, or a struct-level `#[serde(default)]`) keep their normal skeleton and become normal axes; generated fixtures carry the key, curated fixtures may omit it or set any value matching the skeleton.
 
 Cells = product of a view's axes, minus guard-excluded cells, merged by equivalence rules. Default budget 64 cells per view; over budget is red.
 
 ## Findings
 `id` (stable hash of view + path + kind), `location` (file:line, .blp mapped), `fingerprint` (hash of the source span or compiled XML node), `extractor` + `version`, `kind`:
 `unresolved-type`, `macro`, `widget-local-state`, `non-vm-binding`, `vm-signal`, `dynamic-registration`, `unread-field`, `feature-gated`, `edge-candidate`, `extractor-limit`.
-A changed fingerprint reopens its disposition.
+
+`#[serde(default)]` fields are fully represented and produce no `extractor-limit` finding; the remaining serde attributes that change the wire representation do.
