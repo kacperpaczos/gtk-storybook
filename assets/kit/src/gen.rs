@@ -53,8 +53,10 @@ pub enum Skel {
     /// An externally tagged enum: `chosen` is the variant the generated
     /// fixture renders; drift accepts any declared variant, checking the
     /// payload against that variant's own skeleton (`None` = unit variant).
+    /// `pinned` = the enum is an axis of this cell: only `chosen` is valid.
     Enum {
         chosen: usize,
+        pinned: bool,
         variants: Vec<(String, Option<Skel>)>,
     },
     Obj(Vec<(String, Skel)>),
@@ -197,12 +199,10 @@ fn enum_skel(
     path: &str,
     assignment: &BTreeMap<String, String>,
 ) -> Skel {
-    let chosen = variants
-        .iter()
-        .position(|v| Some(v.name.as_str()) == class)
-        .unwrap_or(0);
+    let matched = variants.iter().position(|v| Some(v.name.as_str()) == class);
     Skel::Enum {
-        chosen,
+        chosen: matched.unwrap_or(0),
+        pinned: matched.is_some(),
         variants: variants
             .iter()
             .map(|v| {
@@ -263,7 +263,9 @@ fn to_value(skel: &Skel) -> Value {
                 .map(|(k, v)| (k.clone(), to_value(v)))
                 .collect(),
         ),
-        Skel::Enum { chosen, variants } => match variants.get(*chosen) {
+        Skel::Enum {
+            chosen, variants, ..
+        } => match variants.get(*chosen) {
             Some((name, Some(payload))) => {
                 Value::Object([(name.clone(), to_value(payload))].into_iter().collect())
             }
@@ -381,11 +383,20 @@ fn drift(skel: &Skel, value: &Value, path: &str) -> Option<String> {
         }
         // externally tagged: any declared variant, payload checked
         // against that variant's own skeleton
-        Skel::Enum { variants, .. } => {
-            let allowed = |skip: Option<&str>| {
+        Skel::Enum {
+            chosen,
+            pinned,
+            variants,
+        } => {
+            // an axis enum pins the cell's variant; elsewhere any variant
+            let variants: &[(String, Option<Skel>)] = if *pinned {
+                variants.get(*chosen..=*chosen).unwrap_or(&[])
+            } else {
+                variants
+            };
+            let allowed = || {
                 variants
                     .iter()
-                    .filter(|(n, _)| Some(n.as_str()) != skip)
                     .map(|(n, _)| n.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -395,7 +406,7 @@ fn drift(skel: &Skel, value: &Value, path: &str) -> Option<String> {
                     Some(_) => None,
                     None => Some(format!(
                         "{path}: unknown variant {s}; allowed: {}",
-                        allowed(None)
+                        allowed()
                     )),
                 },
                 Value::Object(map) if map.len() == 1 => {
@@ -407,13 +418,13 @@ fn drift(skel: &Skel, value: &Value, path: &str) -> Option<String> {
                         }
                         None => Some(format!(
                             "{path}: unknown variant {name}; allowed: {}",
-                            allowed(None)
+                            allowed()
                         )),
                     }
                 }
                 _ => Some(format!(
                     "{path}: expected a variant object or string; allowed: {}",
-                    allowed(None)
+                    allowed()
                 )),
             }
         }

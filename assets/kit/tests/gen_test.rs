@@ -493,6 +493,7 @@ fn drift_accepts_any_enum_variant_in_a_collection() {
             bucket: Bucket::Many,
             item: Box::new(Skel::Enum {
                 chosen: 0,
+                pinned: false,
                 variants: vec![
                     (
                         "User".into(),
@@ -519,6 +520,7 @@ fn drift_rejects_an_unknown_enum_variant() {
             bucket: Bucket::One,
             item: Box::new(Skel::Enum {
                 chosen: 0,
+                pinned: false,
                 variants: vec![
                     (
                         "User".into(),
@@ -543,6 +545,7 @@ fn drift_checks_the_chosen_variants_payload() {
             bucket: Bucket::One,
             item: Box::new(Skel::Enum {
                 chosen: 0,
+                pinned: false,
                 variants: vec![
                     (
                         "User".into(),
@@ -628,4 +631,19 @@ fn option_without_a_class_accepts_null_and_a_value() {
     let skel = Some(&fix.skel);
     assert_eq!(structural_drift(skel, &with_text), None, "some must pass");
     assert_eq!(structural_drift(skel, &with_null), None, "none must pass");
+}
+
+#[test]
+fn drift_keeps_an_axis_enum_pinned_to_the_cells_variant() {
+    let skel = Skel::Enum {
+        chosen: 1,
+        pinned: true,
+        variants: vec![("Ok".into(), None), ("Failed".into(), None)],
+    };
+    assert_eq!(structural_drift(Some(&skel), "\"Failed\""), None);
+    let msg = structural_drift(Some(&skel), "\"Ok\"").expect("pinned variant");
+    assert!(
+        msg.contains("Ok") && msg.contains("allowed: Failed"),
+        "{msg}"
+    );
 }
