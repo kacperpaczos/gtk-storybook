@@ -174,7 +174,11 @@ pub const SURFACE_PX_PER_NOTCH: f64 = 25.0;
 /// smooth touchpad deltas come in surface pixels (`GdkScrollUnit::Surface`)
 /// and are scaled down by [`SURFACE_PX_PER_NOTCH`].
 pub fn scroll_notches(dy: f64, surface_px: bool) -> f64 {
-    if surface_px { dy / SURFACE_PX_PER_NOTCH } else { dy }
+    if surface_px {
+        dy / SURFACE_PX_PER_NOTCH
+    } else {
+        dy
+    }
 }
 
 /// Scroll decision: the zoom factor for a vertical scroll of `dy` notches
@@ -958,7 +962,11 @@ pub fn edge_visible(back: bool, show_back: bool) -> bool {
 /// Flow node the map focuses on: the hovered node wins, else the node of
 /// the selected state (a variant focuses its node). `None` when neither
 /// is on the map — then nothing is dimmed and no edge label is shown.
-pub fn focus_node(plan: &CanvasPlan, hovered: Option<&str>, selected: Option<&str>) -> Option<String> {
+pub fn focus_node(
+    plan: &CanvasPlan,
+    hovered: Option<&str>,
+    selected: Option<&str>,
+) -> Option<String> {
     let on_map = |id: &str| plan.nodes.iter().any(|n| n.state_id == id);
     if let Some(h) = hovered.filter(|h| on_map(h)) {
         return Some(h.to_string());
@@ -1820,8 +1828,7 @@ impl Canvas {
 
         // Selection synced from the story list: accent frame on top of nodes.
         if let Some(selected) = self.imp().selected.borrow().as_deref()
-            && let Some(h) =
-                highlight_rect(&content.plan, &self.imp().expanded.borrow(), selected)
+            && let Some(h) = highlight_rect(&content.plan, &self.imp().expanded.borrow(), selected)
         {
             let frame = gsk::RoundedRect::from_rect(
                 graphene::Rect::new(

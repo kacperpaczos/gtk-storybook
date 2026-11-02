@@ -11,7 +11,7 @@ use gtk::prelude::*;
 use sha2::{Digest, Sha256};
 
 /// Signature of a built story tree: walk it, hash the description.
-#[mutants::skip] // widget-tree walk needs gtk::init; covered by the SKILLCRAFT_GTK_TESTS-gated test below
+#[mutants::skip] // widget-tree walk needs gtk::init; covered by the GTK_STORYBOOK_GTK_TESTS-gated test below
 pub fn render_signature(w: &gtk::Widget) -> String {
     let mut description = String::new();
     walk(w, 0, &mut description);
@@ -72,13 +72,14 @@ mod tests {
     }
 
     /// The single GTK-init test of this crate (harness rule: gated behind
-    /// `SKILLCRAFT_GTK_TESTS=1` and skipped when no display is available —
+    /// `GTK_STORYBOOK_GTK_TESTS=1` and skipped when no display is available —
     /// it never creates one and never calls `present()`).
     #[test]
     #[allow(clippy::disallowed_methods)] // env gate is mandated by the kit harness rules
     fn render_signature_walks_a_built_tree() {
-        if std::env::var_os("SKILLCRAFT_GTK_TESTS").as_deref() != Some(std::ffi::OsStr::new("1")) {
-            eprintln!("skipping: SKILLCRAFT_GTK_TESTS is not set to 1");
+        if std::env::var_os("GTK_STORYBOOK_GTK_TESTS").as_deref() != Some(std::ffi::OsStr::new("1"))
+        {
+            eprintln!("skipping: GTK_STORYBOOK_GTK_TESTS is not set to 1");
             return;
         }
         if gtk::init().is_err() {

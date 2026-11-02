@@ -4,8 +4,8 @@
 //! `fixtures/`, `flows.toml` and `layout.json` from the storybook directory
 //! and renders the story list plus the flow-map canvas.
 //!
-//! Nothing in this crate knows a specific host: SkillCraft is just the first
-//! consumer of the kit.
+//! Nothing in this crate knows a specific host: the first host app is just
+//! the first consumer of the kit.
 
 pub mod anim;
 pub mod app;

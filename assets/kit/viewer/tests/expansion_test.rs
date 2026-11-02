@@ -1,6 +1,6 @@
 //! Inline variant expansion: animation math, the relayout generation
 //! counter, builtin expansion geometry, variant grid cells, and the
-//! no-overlap invariant over the SkillCraft storybook layout (pure, no GUI;
+//! no-overlap invariant over the host storybook's layout (pure, no GUI;
 //! the dot path is skipped when `dot` is absent).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -335,7 +335,7 @@ fn layout_boxes(layout: &Layout) -> Vec<Rect> {
         .collect()
 }
 
-/// The SkillCraft storybook layout: for the stored layout and for every
+/// The host storybook's layout: for the stored layout and for every
 /// combination of up to 2 expanded nodes (and all expanded at once), no two
 /// node boxes intersect and no two cluster frames overlap — builtin plan
 /// and dot (skipped when dot is absent).

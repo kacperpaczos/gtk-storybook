@@ -6,8 +6,8 @@ use storybook_viewer::canvas::{
     ARROW_HALF_WIDTH, ARROW_LEN, BACK_DROP_MIN, FIT_PADDING, HGAP, KeyAction, LANE_GAP,
     LANE_HEADER_H, MARGIN, MAX_SCALE, MIN_SCALE, NODE_H, NODE_W, NodeGeometry, Rect, TITLE_H,
     VARIANT_H, VGAP, ViewTransform, arrow_triangle, badge_at, badge_label, badge_rect,
-    content_bounds, edge_geometry, edge_visible, fit_size, fit_transform, key_action,
-    node_at, plan, scroll_zoom, zoom_at,
+    content_bounds, edge_geometry, edge_visible, fit_size, fit_transform, key_action, node_at,
+    plan, scroll_zoom, zoom_at,
 };
 fn node(state_id: &str, lane: u32, depth: u32, order: u32) -> NodePos {
     NodePos {
@@ -1135,14 +1135,7 @@ fn hl_plan() -> storybook_viewer::canvas::CanvasPlan {
     CanvasPlan {
         nodes: vec![
             node("v/a", 2, rect),
-            node(
-                "v/b",
-                0,
-                Rect {
-                    x: 500.0,
-                    ..rect
-                },
-            ),
+            node("v/b", 0, Rect { x: 500.0, ..rect }),
         ],
         variants: vec![variant("v/a1"), variant("v/a2")],
         lanes: Default::default(),
@@ -1209,13 +1202,19 @@ fn state_at_hits_node_thumbnail_and_title_strip() {
     use storybook_viewer::canvas::state_at;
     let plan = hl_plan();
     let none = Default::default();
-    assert_eq!(state_at(&plan, &none, (110.0, 60.0)).as_deref(), Some("v/a"));
+    assert_eq!(
+        state_at(&plan, &none, (110.0, 60.0)).as_deref(),
+        Some("v/a")
+    );
     // the title strip under the thumbnail belongs to the node too
     assert_eq!(
         state_at(&plan, &none, (110.0, 50.0 + NODE_H + TITLE_H / 2.0)).as_deref(),
         Some("v/a")
     );
-    assert_eq!(state_at(&plan, &none, (510.0, 60.0)).as_deref(), Some("v/b"));
+    assert_eq!(
+        state_at(&plan, &none, (510.0, 60.0)).as_deref(),
+        Some("v/b")
+    );
     assert_eq!(state_at(&plan, &none, (5.0, 5.0)), None);
 }
 
@@ -1227,8 +1226,14 @@ fn state_at_prefers_variant_cells_of_expanded_nodes() {
     let expanded: std::collections::BTreeSet<String> = ["v/a".to_string()].into();
     let cells = variant_cells(plan.nodes[0].rect, 2);
     let centre = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
-    assert_eq!(state_at(&plan, &expanded, centre(cells[0])).as_deref(), Some("v/a1"));
-    assert_eq!(state_at(&plan, &expanded, centre(cells[1])).as_deref(), Some("v/a2"));
+    assert_eq!(
+        state_at(&plan, &expanded, centre(cells[0])).as_deref(),
+        Some("v/a1")
+    );
+    assert_eq!(
+        state_at(&plan, &expanded, centre(cells[1])).as_deref(),
+        Some("v/a2")
+    );
     // collapsed: the same point is not a variant
     assert_ne!(
         state_at(&plan, &Default::default(), centre(cells[1])).as_deref(),
@@ -1256,11 +1261,20 @@ fn focus_prefers_hover_then_selection_and_maps_variants_to_their_node() {
     let plan = hl_plan();
     assert_eq!(focus_node(&plan, None, None), None);
     assert_eq!(focus_node(&plan, None, Some("v/b")).as_deref(), Some("v/b"));
-    assert_eq!(focus_node(&plan, None, Some("v/a2")).as_deref(), Some("v/a"));
-    assert_eq!(focus_node(&plan, Some("v/b"), Some("v/a")).as_deref(), Some("v/b"));
+    assert_eq!(
+        focus_node(&plan, None, Some("v/a2")).as_deref(),
+        Some("v/a")
+    );
+    assert_eq!(
+        focus_node(&plan, Some("v/b"), Some("v/a")).as_deref(),
+        Some("v/b")
+    );
     // off-map ids never focus; a stale hover falls back to the selection
     assert_eq!(focus_node(&plan, None, Some("v/zz")), None);
-    assert_eq!(focus_node(&plan, Some("v/zz"), Some("v/a1")).as_deref(), Some("v/a"));
+    assert_eq!(
+        focus_node(&plan, Some("v/zz"), Some("v/a1")).as_deref(),
+        Some("v/a")
+    );
 }
 
 #[test]
@@ -1347,5 +1361,8 @@ fn state_at_stops_right_below_the_title_strip() {
         state_at(&plan, &none, (x, 50.0 + NODE_H + TITLE_H - 1.0)).as_deref(),
         Some("v/a")
     );
-    assert_eq!(state_at(&plan, &none, (x, 50.0 + NODE_H + TITLE_H + 1.0)), None);
+    assert_eq!(
+        state_at(&plan, &none, (x, 50.0 + NODE_H + TITLE_H + 1.0)),
+        None
+    );
 }

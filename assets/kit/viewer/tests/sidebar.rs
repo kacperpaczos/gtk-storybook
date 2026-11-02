@@ -185,7 +185,10 @@ mod pages_tree {
             "install".into(),
             vec![
                 ("source".into(), vec!["none".into(), "some".into()]),
-                ("found".into(), vec!["empty".into(), "one".into(), "many".into()]),
+                (
+                    "found".into(),
+                    vec!["empty".into(), "one".into(), "many".into()],
+                ),
                 ("scopes".into(), vec!["one".into(), "many".into()]),
             ],
         );
@@ -319,7 +322,12 @@ mod pages_tree {
             .collect();
         assert_eq!(
             titles,
-            ["Views", "Instalacja skilla", "Jeden skill", "Znaleziono: many"]
+            [
+                "Views",
+                "Instalacja skilla",
+                "Jeden skill",
+                "Znaleziono: many"
+            ]
         );
         assert_eq!(locate_leaf(&ps, "install/nope"), None);
     }
@@ -330,13 +338,26 @@ mod pages_tree {
         // install/many-p lost its cells (stale cells.json)
         f.assignment.remove("install/many-p");
         let ps = pages(&model(), &f);
-        assert!(ps.iter().flat_map(|p| &p.rows).all(|r| !r.title.contains('?')));
+        assert!(
+            ps.iter()
+                .flat_map(|p| &p.rows)
+                .all(|r| !r.title.contains('?'))
+        );
         let one = page(&ps, "Jeden skill");
         let titles: Vec<&str> = one.rows.iter().map(|r| r.title.as_str()).collect();
         // known values split; the unassigned state follows as a plain leaf
-        assert_eq!(titles, ["Znaleziono: one", "Znaleziono: many", "Wiele z projektem"]);
+        assert_eq!(
+            titles,
+            ["Znaleziono: one", "Znaleziono: many", "Wiele z projektem"]
+        );
         // every state is reachable exactly once
-        for id in ["install/start", "install/start-p", "install/one", "install/many-1", "install/many-p"] {
+        for id in [
+            "install/start",
+            "install/start-p",
+            "install/one",
+            "install/many-1",
+            "install/many-p",
+        ] {
             let n = ps
                 .iter()
                 .flat_map(|p| &p.rows)
@@ -349,7 +370,10 @@ mod pages_tree {
     #[test]
     fn unknown_values_sort_after_known_classes_in_order_seen() {
         let mut f = facets();
-        f.assignment.get_mut("install/one").unwrap().insert("found".into(), "zzz".into());
+        f.assignment
+            .get_mut("install/one")
+            .unwrap()
+            .insert("found".into(), "zzz".into());
         let ps = pages(&model(), &f);
         let one = page(&ps, "Jeden skill");
         let titles: Vec<&str> = one.rows.iter().map(|r| r.title.as_str()).collect();
@@ -365,7 +389,10 @@ mod pages_tree {
         assert_eq!(class_label(&f, "v", "found", "many_items"), "many items");
         let labelled = facets();
         assert_eq!(axis_label(&labelled, "install", "scopes"), "Zasięg");
-        assert_eq!(class_label(&labelled, "install", "scopes", "many"), "globalny + projekt");
+        assert_eq!(
+            class_label(&labelled, "install", "scopes", "many"),
+            "globalny + projekt"
+        );
         // a label of another view does not leak
         assert_eq!(axis_label(&labelled, "other", "scopes"), "Scopes");
     }

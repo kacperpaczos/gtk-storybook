@@ -1,6 +1,6 @@
 # The storybook kit is its own Cargo workspace: it is vendored into a host
 # repo under `storybook/kit/` and must stay independent of any host crate
-# (SkillCraft is just the first host).
+# (the first host app is just the first consumer).
 [workspace]
 resolver = "3"
 members = ["viewer"]

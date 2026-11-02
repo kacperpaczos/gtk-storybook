@@ -73,7 +73,7 @@ Once it is built, open the viewer from the host repo (Rust): `cargo run --manife
 
 ## Requirements
 
-Rust toolchain (for `sbk` and the Rust viewer), GTK 4.14+ and libadwaita 1.5+ development files for the viewer, Graphviz (optional, recommended).
+Rust toolchain (for `sbk` and the Rust viewer), GTK 4.14+ and libadwaita 1.5+ development files for the viewer, Graphviz (optional, recommended). The viewer's GTK tests need a display; they run only when `GTK_STORYBOOK_GTK_TESTS` is exactly `1` and are skipped otherwise.
 
 ## Words used above
 
@@ -84,9 +84,7 @@ Rust toolchain (for `sbk` and the Rust viewer), GTK 4.14+ and libadwaita 1.5+ de
 
 ## Status and honest limits
 
-The `main` branch is ahead of the v0.1 tag.
-
-**Works today.** The full pipeline and the Rust/GTK4 viewer for Rust (gtk-rs) hosts, used on a real, not yet public app (SkillCraft, Rust + libadwaita: 11 views, 20 flow nodes, 110 cells). The extractor reads Rust only. `references/adapters.md` describes how other languages would plug in. None of them works yet.
+**Works today.** The full pipeline and the Rust/GTK4 viewer for Rust (gtk-rs) hosts, used on a real, not yet public Rust + libadwaita app. The extractor reads Rust only. `references/adapters.md` describes how other languages would plug in. None of them works yet.
 
 **Not there yet.** These are planned, in this order:
 

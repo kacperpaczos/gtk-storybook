@@ -297,7 +297,12 @@ fn split(
             None => groups.push((v, vec![(state.clone(), title.clone())])),
         }
     }
-    let rank = |v: &str| class_order.iter().position(|c| c == v).unwrap_or(usize::MAX);
+    let rank = |v: &str| {
+        class_order
+            .iter()
+            .position(|c| c == v)
+            .unwrap_or(usize::MAX)
+    };
     groups.sort_by_key(|(v, _)| rank(v));
     let dim = axis_label(facets, view, axis);
     for (v, members) in groups {

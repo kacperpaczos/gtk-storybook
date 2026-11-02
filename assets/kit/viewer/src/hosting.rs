@@ -108,13 +108,14 @@ pub fn host(built: &gtk::Widget) -> Hosted {
 mod tests {
     use super::*;
 
-    /// GTK-init test, gated behind `SKILLCRAFT_GTK_TESTS=1` and skipped when
+    /// GTK-init test, gated behind `GTK_STORYBOOK_GTK_TESTS=1` and skipped when
     /// no display is available — it never creates one, never presents.
     #[test]
     #[allow(clippy::disallowed_methods)] // env gate is mandated by the kit harness rules
     fn host_unparents_dialog_content_into_a_sheet() {
-        if std::env::var_os("SKILLCRAFT_GTK_TESTS").as_deref() != Some(std::ffi::OsStr::new("1")) {
-            eprintln!("skipping: SKILLCRAFT_GTK_TESTS is not set to 1");
+        if std::env::var_os("GTK_STORYBOOK_GTK_TESTS").as_deref() != Some(std::ffi::OsStr::new("1"))
+        {
+            eprintln!("skipping: GTK_STORYBOOK_GTK_TESTS is not set to 1");
             return;
         }
         if gtk::init().is_err() {
