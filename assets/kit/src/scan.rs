@@ -761,7 +761,24 @@ fn has_serde_default(attrs: &[syn::Attribute]) -> bool {
     attrs
         .iter()
         .filter(|a| a.path().is_ident("serde"))
-        .any(|a| a.to_token_stream().to_string().contains("default"))
+        .any(|a| {
+            let mut found = false;
+            // `parse_nested_meta` walks `default`, `default = "f"`,
+            // `rename = "default"` etc. by key, never by substring
+            let _ = a.parse_nested_meta(|meta| {
+                if meta.path.is_ident("default") {
+                    found = true;
+                }
+                if meta.input.peek(syn::Token![=]) {
+                    let _: syn::Expr = meta.value()?.parse()?;
+                } else if meta.input.peek(syn::token::Paren) {
+                    let _content;
+                    syn::parenthesized!(_content in meta.input);
+                }
+                Ok(())
+            });
+            found
+        })
 }
 
 fn is_public(vis: &syn::Visibility) -> bool {
@@ -1856,5 +1873,21 @@ mod tests {
                 ("Void", false)
             ]
         );
+    }
+
+    #[test]
+    fn serde_default_is_matched_by_key_not_substring() {
+        let attrs = |src: &str| syn::parse_str::<syn::DeriveInput>(src).unwrap().attrs;
+        assert!(has_serde_default(&attrs("#[serde(default)] struct A;")));
+        assert!(has_serde_default(&attrs(
+            "#[serde(rename = \"x\", default = \"make\")] struct A;"
+        )));
+        assert!(!has_serde_default(&attrs(
+            "#[serde(skip_serializing_if = \"is_default\")] struct A;"
+        )));
+        assert!(!has_serde_default(&attrs(
+            "#[serde(rename = \"default\")] struct A;"
+        )));
+        assert!(!has_serde_default(&attrs("#[derive(Default)] struct A;")));
     }
 }
