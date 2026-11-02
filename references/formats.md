@@ -16,6 +16,10 @@ storybook/
   <shell>               # host-language storybook app (from the adapter templates)
 ```
 
+  Curated fixtures may use any declared variant of an enum (in a field,
+  option, collection or map); the chosen variant's payload must match the
+  skeleton, and an unknown variant name is drift.
+
 ## views.toml
 ```toml
 lang = "python"                    # rust | python | c | vala | gjs

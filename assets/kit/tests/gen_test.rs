@@ -483,6 +483,86 @@ fn integer_skeleton_drift_rejects_floats_not_integers() {
     assert!(msg.contains("expected integer"), "{msg}");
 }
 
+/// A `Vec<Item>` where `Item` is an externally tagged enum: the skeleton
+/// records every variant, so curation may show any of them.
+#[test]
+fn drift_accepts_any_enum_variant_in_a_collection() {
+    let skel = Skel::Obj(vec![(
+        "items".into(),
+        Skel::Arr {
+            bucket: Bucket::Many,
+            item: Box::new(Skel::Enum {
+                chosen: 0,
+                variants: vec![
+                    (
+                        "User".into(),
+                        Some(Skel::Obj(vec![("text".into(), Skel::Str("a".into()))])),
+                    ),
+                    (
+                        "Agent".into(),
+                        Some(Skel::Obj(vec![("text".into(), Skel::Str("b".into()))])),
+                    ),
+                    ("Login".into(), None),
+                ],
+            }),
+        },
+    )]);
+    let curated = r#"{"items": [{"User": {"text": "a"}}, {"Agent": {"text": "b"}}, "Login"]}"#;
+    assert_eq!(structural_drift(Some(&skel), curated), None);
+}
+
+#[test]
+fn drift_rejects_an_unknown_enum_variant() {
+    let skel = Skel::Obj(vec![(
+        "items".into(),
+        Skel::Arr {
+            bucket: Bucket::One,
+            item: Box::new(Skel::Enum {
+                chosen: 0,
+                variants: vec![
+                    (
+                        "User".into(),
+                        Some(Skel::Obj(vec![("text".into(), Skel::Str("a".into()))])),
+                    ),
+                    ("Login".into(), None),
+                ],
+            }),
+        },
+    )]);
+    let msg = structural_drift(Some(&skel), r#"{"items": [{"Robot": {}}]}"#).unwrap();
+    assert!(msg.contains("$.items[0]"), "{msg}");
+    assert!(msg.contains("Robot"), "{msg}");
+    assert!(msg.contains("User") && msg.contains("Login"), "{msg}");
+}
+
+#[test]
+fn drift_checks_the_chosen_variants_payload() {
+    let skel = Skel::Obj(vec![(
+        "items".into(),
+        Skel::Arr {
+            bucket: Bucket::One,
+            item: Box::new(Skel::Enum {
+                chosen: 0,
+                variants: vec![
+                    (
+                        "User".into(),
+                        Some(Skel::Obj(vec![("text".into(), Skel::Str("a".into()))])),
+                    ),
+                    (
+                        "Agent".into(),
+                        Some(Skel::Obj(vec![("text".into(), Skel::Str("b".into()))])),
+                    ),
+                ],
+            }),
+        },
+    )]);
+    let msg = structural_drift(Some(&skel), r#"{"items": [{"Agent": {"txt": "b"}}]}"#).unwrap();
+    assert!(msg.contains("text"), "{msg}");
+    // and the payload must be an object at all
+    let msg = structural_drift(Some(&skel), r#"{"items": [{"Agent": "b"}]}"#).unwrap();
+    assert!(msg.contains("Agent"), "{msg}");
+}
+
 #[test]
 fn option_without_a_class_accepts_null_and_a_value() {
     // a non-axis Option (nested in a struct axis) has no assigned class,

@@ -50,6 +50,13 @@ pub enum Skel {
     },
     /// A JSON array of an exact length (tuples, fixed arrays).
     Tup(Vec<Skel>),
+    /// An externally tagged enum: `chosen` is the variant the generated
+    /// fixture renders; drift accepts any declared variant, checking the
+    /// payload against that variant's own skeleton (`None` = unit variant).
+    Enum {
+        chosen: usize,
+        variants: Vec<(String, Option<Skel>)>,
+    },
     Obj(Vec<(String, Skel)>),
 }
 
@@ -162,15 +169,7 @@ fn skel_for(
             // no assigned class: both `null` and a present value are valid
             None => Skel::Wild,
         },
-        TypeShape::Enum { variants } => {
-            let variant = variants
-                .iter()
-                .find(|v| Some(v.name.as_str()) == class)
-                .or_else(|| variants.first());
-            variant
-                .map(|v| variant_skel(v, view, path, assignment))
-                .unwrap_or(Skel::Wild)
-        }
+        TypeShape::Enum { variants } => enum_skel(variants, class, view, path, assignment),
         TypeShape::Phase { ok, err } => {
             if class == Some("err") {
                 Skel::Obj(vec![("Err".into(), skel_for(err, view, path, assignment))])
@@ -186,6 +185,35 @@ fn skel_for(
             bucket: bucket_of(class),
             value: Box::new(skel_for(value, view, path, assignment)),
         },
+    }
+}
+
+/// All variants of an externally tagged enum, with `class` (an axis
+/// variant name) choosing which one the generated fixture renders.
+fn enum_skel(
+    variants: &[crate::scan::VariantInfo],
+    class: Option<&str>,
+    view: &str,
+    path: &str,
+    assignment: &BTreeMap<String, String>,
+) -> Skel {
+    let chosen = variants
+        .iter()
+        .position(|v| Some(v.name.as_str()) == class)
+        .unwrap_or(0);
+    Skel::Enum {
+        chosen,
+        variants: variants
+            .iter()
+            .map(|v| {
+                (
+                    v.name.clone(),
+                    v.payload
+                        .as_ref()
+                        .map(|p| skel_for(p, view, path, assignment)),
+                )
+            })
+            .collect(),
     }
 }
 
@@ -207,31 +235,8 @@ fn class_skel(
 ) -> Skel {
     match shape {
         TypeShape::Bool => Skel::Bool(class == Some("true")),
-        TypeShape::Enum { variants } => {
-            let variant = variants
-                .iter()
-                .find(|v| Some(v.name.as_str()) == class)
-                .or_else(|| variants.first());
-            variant
-                .map(|v| variant_skel(v, view, path, assignment))
-                .unwrap_or(Skel::Wild)
-        }
+        TypeShape::Enum { variants } => enum_skel(variants, class, view, path, assignment),
         other => skel_for(other, view, path, assignment),
-    }
-}
-
-fn variant_skel(
-    variant: &crate::scan::VariantInfo,
-    view: &str,
-    path: &str,
-    assignment: &BTreeMap<String, String>,
-) -> Skel {
-    match &variant.payload {
-        Some(payload) => Skel::Obj(vec![(
-            variant.name.clone(),
-            skel_for(payload, view, path, assignment),
-        )]),
-        None => Skel::Str(variant.name.clone()),
     }
 }
 
@@ -258,6 +263,13 @@ fn to_value(skel: &Skel) -> Value {
                 .map(|(k, v)| (k.clone(), to_value(v)))
                 .collect(),
         ),
+        Skel::Enum { chosen, variants } => match variants.get(*chosen) {
+            Some((name, Some(payload))) => {
+                Value::Object([(name.clone(), to_value(payload))].into_iter().collect())
+            }
+            Some((name, None)) => Value::String(name.clone()),
+            None => Value::Null,
+        },
     }
 }
 
@@ -366,6 +378,44 @@ fn drift(skel: &Skel, value: &Value, path: &str) -> Option<String> {
                 .zip(actual)
                 .enumerate()
                 .find_map(|(i, (skel, v))| drift(skel, v, &format!("{path}[{i}]")))
+        }
+        // externally tagged: any declared variant, payload checked
+        // against that variant's own skeleton
+        Skel::Enum { variants, .. } => {
+            let allowed = |skip: Option<&str>| {
+                variants
+                    .iter()
+                    .filter(|(n, _)| Some(n.as_str()) != skip)
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            match value {
+                Value::String(s) => match variants.iter().find(|(n, p)| p.is_none() && n == s) {
+                    Some(_) => None,
+                    None => Some(format!(
+                        "{path}: unknown variant {s}; allowed: {}",
+                        allowed(None)
+                    )),
+                },
+                Value::Object(map) if map.len() == 1 => {
+                    let (name, payload) = map.iter().next().unwrap();
+                    match variants.iter().find(|(n, _)| n == name) {
+                        Some((_, Some(skel))) => drift(skel, payload, &format!("{path}.{name}")),
+                        Some((_, None)) => {
+                            Some(format!("{path}: unit variant {name} must be a string"))
+                        }
+                        None => Some(format!(
+                            "{path}: unknown variant {name}; allowed: {}",
+                            allowed(None)
+                        )),
+                    }
+                }
+                _ => Some(format!(
+                    "{path}: expected a variant object or string; allowed: {}",
+                    allowed(None)
+                )),
+            }
         }
         Skel::Obj(fields) => {
             let Some(map) = value.as_object() else {
