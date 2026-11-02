@@ -60,7 +60,8 @@ reason = "single-line ellipsized label"
 
 [labels]
 # optional story-menu names: "<axis>" names a data dimension,
-# "<axis>.<class>" one of its values (fallback: humanized ids)
+# "<axis>.<class>" one of its final classes (fallback: humanized ids);
+# `sbk expand` reports a key naming no axis or class as a problem
 "scopes" = "Zasięg"
 "scopes.many" = "globalny + projekt"
 ```

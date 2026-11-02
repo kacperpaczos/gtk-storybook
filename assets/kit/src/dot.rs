@@ -157,13 +157,14 @@ pub fn build_dot_with_sizes(
         if nodes.is_empty() {
             continue;
         }
-        // cluster label: the view's display name, else the view id
+        // cluster label: the view's display name, else the humanized id
         let label = placed
             .view_titles
             .get(view)
-            .map_or(view.as_str(), String::as_str);
+            .cloned()
+            .unwrap_or_else(|| model::humanize(view));
         out.push_str(&format!("subgraph \"cluster_{}\" {{\n", escape_dot(view)));
-        out.push_str(&format!("label=\"{}\";\nmargin=20;\n", escape_dot(label)));
+        out.push_str(&format!("label=\"{}\";\nmargin=20;\n", escape_dot(&label)));
         for node in nodes {
             let label = node.title.as_deref().unwrap_or(node.state_id.as_str());
             let attrs = match sizes.get(&node.state_id) {
@@ -581,12 +582,12 @@ fn merge_dot_geometry(
                 .find(|v| c.nodes.iter().any(|n| view_of(n) == v.as_str()))
                 .cloned()
                 .unwrap_or_else(|| view_of(&c.nodes[0]));
-            // frame label: the view's display name, else the view id
+            // frame label: the view's display name, else the humanized id
             let label = placed
                 .view_titles
                 .get(&view)
                 .cloned()
-                .unwrap_or_else(|| view.clone());
+                .unwrap_or_else(|| crate::model::humanize(&view));
             ClusterPos {
                 label,
                 view,
@@ -871,10 +872,11 @@ mod tests {
             .expect("route a->b");
         assert_eq!(to_b.points, Some(vec![GeoPoint { x: 1.0, y: 1.0 }]));
 
-        // the cluster of v2/n belongs to view v2, labeled with the view id
+        // the cluster of v2/n belongs to view v2; no authored title, so it
+        // is labeled with the humanized id (same fallback as the menu)
         assert_eq!(merged.clusters.len(), 1);
         assert_eq!(merged.clusters[0].view, "v2");
-        assert_eq!(merged.clusters[0].label, "v2");
+        assert_eq!(merged.clusters[0].label, "V2");
         assert_eq!(merged.engine, crate::model::ENGINE_DOT);
     }
 }

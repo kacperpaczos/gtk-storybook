@@ -1,9 +1,9 @@
-//! Story list (references/canvas.md): an `AdwNavigationSplitView` whose
-//! sidebar is an `AdwNavigationView` drill-down (views -> states,
-//! GNOME HIG "browsing": back button, optional search), and whose content
-//! shows the live story inside an `AdwBreakpointBin` at the chosen width
-//! preset (exact width via a `GtkConstraintGuide` with min = max) plus an
-//! Events pane.
+//! Story menu and preview columns (references/canvas.md): the menu is an
+//! `AdwNavigationView` drill-down (views -> steps -> data dimensions ->
+//! states, GNOME HIG "browsing": back button, search on the root page);
+//! the preview shows the live story inside an `AdwBreakpointBin` at the
+//! chosen width preset (exact width via a `GtkConstraintGuide` with
+//! min = max) plus an Events pane.
 
 use adw::prelude::*;
 
@@ -89,16 +89,18 @@ pub(crate) struct StoryListView {
     pub sidebar: adw::ToolbarView,
     /// Right column: live preview of the selected state + Events pane.
     pub preview: adw::ToolbarView,
-    /// Sidebar drill-down: level 1 "Views", one level-2 page per view,
-    /// plus the flat search-results page.
+    /// Menu drill-down: root "Views" plus one page per further level.
     pub nav: adw::NavigationView,
     /// Drill-down pages (crate::sidebar::pages): spec, page widget and row
-    /// list share one index; page 0 is the root "Widoki".
+    /// list share one index; page 0 is the root "Views".
     pub specs: Vec<crate::sidebar::PageSpec>,
     pub pages: Vec<adw::NavigationPage>,
     pub lists: Vec<gtk::ListBox>,
-    pub search_page: adw::NavigationPage,
+    /// Root page content: "pages" (the view list) or "results" (flat
+    /// search hits while the query is non-empty); the entry stays visible.
+    pub root_stack: gtk::Stack,
     pub search_list: gtk::ListBox,
+    pub search_bar: gtk::SearchBar,
     pub search_entry: gtk::SearchEntry,
     pub content_slot: gtk::Box,
     pub events: gtk::ListBox,
@@ -162,13 +164,24 @@ pub(crate) fn build(specs: &[crate::sidebar::PageSpec]) -> StoryListView {
     views_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     views_scroll.set_child(Some(&views_list));
 
+    // search results replace the view list in place (no extra page), so
+    // the entry stays put while the query is refined
+    let search_list = gtk::ListBox::new();
+    search_list.set_css_classes(&["navigation-sidebar"]);
+    let search_scroll = gtk::ScrolledWindow::new();
+    search_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    search_scroll.set_child(Some(&search_list));
+    let root_stack = gtk::Stack::new();
+    root_stack.add_named(&views_scroll, Some("pages"));
+    root_stack.add_named(&search_scroll, Some("results"));
+
     let search_entry = gtk::SearchEntry::new();
-    search_entry.set_placeholder_text(Some("Szukaj stanów"));
+    search_entry.set_placeholder_text(Some("Search states"));
     search_entry.set_hexpand(true);
     let search_bar = gtk::SearchBar::builder().child(&search_entry).build();
     let search_button = gtk::ToggleButton::new();
     search_button.set_icon_name("system-search-symbolic");
-    search_button.set_tooltip_text(Some("Szukaj (Ctrl+F)"));
+    search_button.set_tooltip_text(Some("Search (Ctrl+F)"));
     search_bar.connect_entry(&search_entry);
 
     let header = adw::HeaderBar::new();
@@ -181,24 +194,10 @@ pub(crate) fn build(specs: &[crate::sidebar::PageSpec]) -> StoryListView {
     let views_toolbar = adw::ToolbarView::new();
     views_toolbar.add_top_bar(&header);
     views_toolbar.add_top_bar(&search_bar);
-    views_toolbar.set_content(Some(&views_scroll));
+    views_toolbar.set_content(Some(&root_stack));
     let views_page = adw::NavigationPage::builder()
-        .title("Widoki")
+        .title(crate::sidebar::ROOT_TITLE)
         .child(&views_toolbar)
-        .build();
-
-    // --- sidebar: search results (flat, while the query is non-empty) -----
-    let search_list = gtk::ListBox::new();
-    search_list.set_css_classes(&["navigation-sidebar"]);
-    let search_scroll = gtk::ScrolledWindow::new();
-    search_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    search_scroll.set_child(Some(&search_list));
-    let search_toolbar = adw::ToolbarView::new();
-    search_toolbar.add_top_bar(&adw::HeaderBar::new());
-    search_toolbar.set_content(Some(&search_scroll));
-    let search_page = adw::NavigationPage::builder()
-        .title("Wyniki")
-        .child(&search_toolbar)
         .build();
 
     let nav = adw::NavigationView::new();
@@ -209,7 +208,6 @@ pub(crate) fn build(specs: &[crate::sidebar::PageSpec]) -> StoryListView {
     for page in &pages {
         nav.add(page);
     }
-    nav.add(&search_page);
     // Ctrl+F / typing finds the search entry while the sidebar has focus.
     search_bar.set_key_capture_widget(Some(&views_toolbar));
 
@@ -242,7 +240,7 @@ pub(crate) fn build(specs: &[crate::sidebar::PageSpec]) -> StoryListView {
     content_scroll.set_child(Some(&content_column));
 
     let preview_close = gtk::Button::from_icon_name("window-close-symbolic");
-    preview_close.set_tooltip_text(Some("Ukryj podgląd"));
+    preview_close.set_tooltip_text(Some("Hide preview"));
     let width_labels: Vec<String> = WIDTH_PRESETS.iter().map(|w| format!("{w} px")).collect();
     let width_strs: Vec<&str> = width_labels.iter().map(String::as_str).collect();
     let width_choice = gtk::DropDown::from_strings(&width_strs);
@@ -256,7 +254,7 @@ pub(crate) fn build(specs: &[crate::sidebar::PageSpec]) -> StoryListView {
     // window controls live on the map's bar; this one only closes the column
     content_bar.set_show_start_title_buttons(false);
     content_bar.set_show_end_title_buttons(false);
-    content_bar.set_title_widget(Some(&gtk::Label::new(Some("Podgląd"))));
+    content_bar.set_title_widget(Some(&gtk::Label::new(Some("Preview"))));
     content_bar.pack_start(&width_choice);
     content_bar.pack_start(&theme_choice);
     content_bar.pack_end(&preview_close);
@@ -271,8 +269,9 @@ pub(crate) fn build(specs: &[crate::sidebar::PageSpec]) -> StoryListView {
         specs: specs.to_vec(),
         pages,
         lists,
-        search_page,
+        root_stack,
         search_list,
+        search_bar,
         search_entry,
         content_slot,
         events,

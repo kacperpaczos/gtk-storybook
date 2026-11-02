@@ -136,6 +136,24 @@ pub fn expand(inventory: &Inventory, states: &BTreeMap<String, StatesFile>) -> E
             axis_paths.push(axis.path.clone());
         }
 
+        // [labels] keys name an axis ("<axis>") or one of its final classes
+        // ("<axis>.<class>"); a typo would silently fall back to the id
+        for key in file.labels.keys() {
+            let known = axis_paths.iter().zip(&columns).any(|(path, classes)| {
+                key == path
+                    || key
+                        .strip_prefix(path.as_str())
+                        .and_then(|rest| rest.strip_prefix('.'))
+                        .is_some_and(|class| classes.iter().any(|c| c == class))
+            });
+            if !known {
+                problems.push(format!(
+                    "view {}: label for unknown axis or class {key}",
+                    view.id
+                ));
+            }
+        }
+
         // equivalence merges: merged classes collapse onto the first listed
         for eq in &file.equivalences {
             let Some(idx) = axis_paths.iter().position(|p| *p == eq.axis) else {

@@ -598,3 +598,25 @@ fn disposition_for_another_views_finding_is_unknown() {
         expanded.problems
     );
 }
+
+#[test]
+fn labels_must_name_a_known_axis_or_class() {
+    let (_host, storybook, report) = setup(
+        "expand-labels",
+        &[(
+            "settings".into(),
+            "view = \"settings\"\n[labels]\n\"sort\" = \"Kolejność\"\n\"sort.none\" = \"brak\"\n\"sort.bogus\" = \"x\"\n\"nope\" = \"y\"\n".into(),
+        )],
+    );
+    let (states, _) = load_states(&storybook, &report.inventory);
+    let expanded = expand(&report.inventory, &states);
+    let problems: Vec<&String> = expanded
+        .problems
+        .iter()
+        .filter(|p| p.contains("label for unknown"))
+        .collect();
+    let text = format!("{problems:?}");
+    assert_eq!(problems.len(), 2, "{text}");
+    assert!(text.contains("unknown axis or class sort.bogus"), "{text}");
+    assert!(text.contains("unknown axis or class nope"), "{text}");
+}

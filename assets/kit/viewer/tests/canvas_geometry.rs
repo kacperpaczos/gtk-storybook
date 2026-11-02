@@ -6,7 +6,7 @@ use storybook_viewer::canvas::{
     ARROW_HALF_WIDTH, ARROW_LEN, BACK_DROP_MIN, FIT_PADDING, HGAP, KeyAction, LANE_GAP,
     LANE_HEADER_H, MARGIN, MAX_SCALE, MIN_SCALE, NODE_H, NODE_W, NodeGeometry, Rect, TITLE_H,
     VARIANT_H, VGAP, ViewTransform, arrow_triangle, badge_at, badge_label, badge_rect,
-    content_bounds, edge_geometry, edge_visible, fit_size, fit_transform, initial_view, key_action,
+    content_bounds, edge_geometry, edge_visible, fit_size, fit_transform, key_action,
     node_at, plan, scroll_zoom, zoom_at,
 };
 fn node(state_id: &str, lane: u32, depth: u32, order: u32) -> NodePos {
@@ -436,6 +436,17 @@ fn scroll_zooms_without_modifier_and_follows_the_wheel_direction() {
 }
 
 #[test]
+fn touchpad_pixels_become_fractional_notches() {
+    use storybook_viewer::canvas::{SURFACE_PX_PER_NOTCH, scroll_notches};
+    // wheel deltas are notches already
+    assert_eq!(scroll_notches(-1.0, false), -1.0);
+    // a gentle 10 px two-finger scroll is well under one notch
+    assert_eq!(scroll_notches(10.0, true), 10.0 / SURFACE_PX_PER_NOTCH);
+    assert!(scroll_notches(10.0, true) < 1.0);
+    assert_eq!(scroll_notches(-SURFACE_PX_PER_NOTCH, true), -1.0);
+}
+
+#[test]
 fn key_action_fits_on_f_and_passes_everything_else() {
     assert_eq!(key_action(Some('f')), Some(KeyAction::Fit));
     assert_eq!(key_action(Some('F')), Some(KeyAction::Fit));
@@ -632,75 +643,6 @@ fn plan_carries_node_titles_for_the_canvas_labels() {
     let other = p.nodes.iter().find(|n| n.state_id == "v/other").unwrap();
     assert_eq!(root.title.as_deref(), Some("Pierwsze uruchomienie"));
     assert_eq!(other.title, None);
-}
-
-#[test]
-fn initial_view_zooms_the_root_to_80_percent_and_centers_it() {
-    // 0.8 * 800 / NODE_W binds (width-limited); the height ratio is larger.
-    let root = Rect {
-        x: 100.0,
-        y: 50.0,
-        w: NODE_W,
-        h: NODE_H,
-    };
-    let t = initial_view(root, (800.0, 600.0));
-    const { assert!(0.8 * 600.0 / NODE_H > 0.8 * 800.0 / NODE_W) };
-    assert!(
-        (t.scale - 0.8 * 800.0 / NODE_W).abs() < 1e-9,
-        "scale {}",
-        t.scale
-    );
-    let (sx, sy) = t.logical_to_screen(100.0 + NODE_W / 2.0, 50.0 + NODE_H / 2.0);
-    assert!((sx - 400.0).abs() < 1e-9, "center x {sx}");
-    assert!((sy - 300.0).abs() < 1e-9, "center y {sy}");
-    // the node covers 80% of the limiting dimension on screen
-    assert!((t.scale * NODE_W - 0.8 * 800.0).abs() < 1e-9);
-
-    // height binds when the node is tall
-    let tall = Rect {
-        x: 0.0,
-        y: 0.0,
-        w: 400.0,
-        h: 500.0,
-    };
-    let t = initial_view(tall, (800.0, 600.0));
-    assert!(
-        (t.scale - (0.8 * 600.0 / 500.0)).abs() < 1e-9,
-        "scale {}",
-        t.scale
-    );
-
-    // degenerate viewport or node: identity, never a NaN
-    assert_eq!(initial_view(tall, (0.0, 0.0)), ViewTransform::IDENTITY);
-    assert_eq!(
-        initial_view(Rect::ZERO, (800.0, 600.0)),
-        ViewTransform::IDENTITY
-    );
-}
-
-#[test]
-fn initial_view_clamps_the_scale_into_the_canvas_bounds() {
-    // a tiny root in a huge viewport would zoom past MAX_SCALE
-    let t = initial_view(
-        Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 4.0,
-            h: 4.0,
-        },
-        (4000.0, 4000.0),
-    );
-    assert_eq!(t.scale, MAX_SCALE);
-    let t = initial_view(
-        Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 1e6,
-            h: 1e6,
-        },
-        (100.0, 100.0),
-    );
-    assert_eq!(t.scale, MIN_SCALE);
 }
 
 fn variant(state_id: &str, variant_of: &str, lane: u32, depth: u32, order: u32) -> VariantPos {
@@ -1345,4 +1287,41 @@ fn only_edges_touching_the_focus_are_in_focus() {
     assert!(edge_in_focus("a", "b", Some("b")));
     assert!(!edge_in_focus("a", "b", Some("c")));
     assert!(!edge_in_focus("a", "b", None));
+}
+
+#[test]
+fn variant_cells_are_not_hit_before_the_grid_is_drawn() {
+    use storybook_viewer::canvas::{grid_shown, highlight_rect, state_at, variant_cells};
+    // +N just clicked: expanded, but the relayout has not grown the rect yet
+    let plan = hl_plan();
+    let expanded: std::collections::BTreeSet<String> = ["v/a".to_string()].into();
+    assert!(!grid_shown(&plan.nodes[0], &expanded));
+    let grown = variant_cells(
+        Rect {
+            h: NODE_H + 200.0,
+            ..plan.nodes[0].rect
+        },
+        2,
+    );
+    let below = (grown[1].x + 4.0, grown[1].y + 4.0);
+    assert_ne!(state_at(&plan, &expanded, below).as_deref(), Some("v/a2"));
+    // the highlight stays on the node until the grid is on screen
+    assert_eq!(
+        highlight_rect(&plan, &expanded, "v/a2").unwrap().y,
+        plan.nodes[0].rect.y
+    );
+    let mut grown_plan = hl_plan();
+    grown_plan.nodes[0].rect.h = NODE_H + 200.0;
+    assert!(grid_shown(&grown_plan.nodes[0], &expanded));
+    assert!(!grid_shown(&grown_plan.nodes[0], &Default::default()));
+}
+
+#[test]
+fn focus_set_ignores_hidden_back_edges() {
+    use storybook_viewer::canvas::focus_set;
+    let edges = [route("a", "b", true)];
+    let hidden: Vec<String> = focus_set(&edges, "b", false).into_iter().collect();
+    assert_eq!(hidden, ["b"]);
+    let shown: Vec<String> = focus_set(&edges, "b", true).into_iter().collect();
+    assert_eq!(shown, ["a", "b"]);
 }

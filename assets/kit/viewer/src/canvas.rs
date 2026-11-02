@@ -167,29 +167,20 @@ pub fn fit_transform(bounds: Rect, viewport: (f64, f64)) -> ViewTransform {
     }
 }
 
-/// Default view on open: `root` centered and scaled so it fills 80% of the
-/// limiting viewport dimension (aspect preserved). Degenerate viewport or
-/// node is the identity, never a NaN. `F` / the Fit button still fits
-/// everything via [`fit_transform`].
-pub fn initial_view(root: Rect, viewport: (f64, f64)) -> ViewTransform {
-    let (vw, vh) = viewport;
-    if vw <= 0.0 || vh <= 0.0 || root.w <= 0.0 || root.h <= 0.0 {
-        return ViewTransform::IDENTITY;
-    }
-    let scale = (0.8 * vw / root.w)
-        .min(0.8 * vh / root.h)
-        .clamp(MIN_SCALE, MAX_SCALE);
-    ViewTransform {
-        scale,
-        offset_x: vw / 2.0 - scale * (root.x + root.w / 2.0),
-        offset_y: vh / 2.0 - scale * (root.y + root.h / 2.0),
-    }
+/// Touchpad scroll distance (surface px) that counts as one wheel notch.
+pub const SURFACE_PX_PER_NOTCH: f64 = 25.0;
+
+/// A scroll delta in wheel notches: wheel deltas already are notches,
+/// smooth touchpad deltas come in surface pixels (`GdkScrollUnit::Surface`)
+/// and are scaled down by [`SURFACE_PX_PER_NOTCH`].
+pub fn scroll_notches(dy: f64, surface_px: bool) -> f64 {
+    if surface_px { dy / SURFACE_PX_PER_NOTCH } else { dy }
 }
 
-/// Scroll decision: the zoom factor for a vertical scroll of `dy` (no
-/// modifier needed), or `None` when there is no vertical motion. Scrolling
-/// up (`dy < 0`) zooms in; one wheel notch is one [`ZOOM_STEP`], smooth
-/// touchpad deltas scale proportionally (clamped to three notches).
+/// Scroll decision: the zoom factor for a vertical scroll of `dy` notches
+/// (see [`scroll_notches`]; no modifier needed), or `None` when there is no
+/// vertical motion. Scrolling up (`dy < 0`) zooms in; one notch is one
+/// [`ZOOM_STEP`], fractions scale proportionally (clamped to three notches).
 pub fn scroll_zoom(dy: f64) -> Option<f64> {
     if dy == 0.0 {
         None
@@ -755,6 +746,14 @@ pub fn node_at(nodes: &[NodeGeometry], logical: (f64, f64)) -> Option<&NodeGeome
     nodes.iter().rev().find(|n| n.rect.contains(logical))
 }
 
+/// Is `node`'s variant grid on screen? It must be expanded **and** its
+/// rect already grown past the thumbnail — right after a `+N` click the
+/// relayout is still running and the node is drawn collapsed, so its grid
+/// cells must not be hit or highlighted yet.
+pub fn grid_shown(node: &NodeGeometry, expanded: &BTreeSet<String>) -> bool {
+    expanded.contains(&node.state_id) && node.rect.h > NODE_H + 0.5
+}
+
 /// State under a logical point: a variant cell of an expanded node wins
 /// (the grown node rect also covers its grid), else the node itself
 /// (thumbnail, title strip). `None` over empty canvas.
@@ -764,7 +763,7 @@ pub fn state_at(
     logical: (f64, f64),
 ) -> Option<String> {
     for node in plan.nodes.iter().rev() {
-        if !expanded.contains(&node.state_id) {
+        if !grid_shown(node, expanded) {
             continue;
         }
         let variants = plan
@@ -840,7 +839,7 @@ pub fn highlight_rect(
         .nodes
         .iter()
         .find(|n| n.state_id == variant.variant_of)?;
-    if !expanded.contains(&node.state_id) {
+    if !grid_shown(node, expanded) {
         return Some(node_box(node));
     }
     let index = plan
@@ -1008,8 +1007,6 @@ pub struct CanvasContent {
     pub edges: Vec<EdgeRoute>,
     /// View cluster frames (dot layouts): drawn instead of lane headers.
     pub clusters: Vec<ClusterFrame>,
-    /// State id of the root node; the first show centers on it at 80% zoom.
-    pub root: Option<String>,
     pub paintables: BTreeMap<String, gtk::WidgetPaintable>,
 }
 
@@ -1045,6 +1042,9 @@ mod imp {
         /// Flow node under the pointer (variants map to their node); it
         /// takes the focus from the selection while hovered.
         pub hovered: RefCell<Option<String>>,
+        /// Whether the pointer is over the canvas (hover is only
+        /// recomputed then).
+        pub pointer_inside: Cell<bool>,
     }
 
     impl Default for Canvas {
@@ -1068,6 +1068,7 @@ mod imp {
                 anim_ticking: Cell::new(false),
                 selected: RefCell::default(),
                 hovered: RefCell::default(),
+                pointer_inside: Cell::new(false),
             }
         }
     }
@@ -1125,7 +1126,6 @@ impl Canvas {
         plan: CanvasPlan,
         lane_names: Vec<String>,
         edges: Vec<EdgeRoute>,
-        root: Option<String>,
         paintables: BTreeMap<String, gtk::WidgetPaintable>,
     ) {
         let clusters = plan.clusters.clone();
@@ -1135,16 +1135,14 @@ impl Canvas {
             lane_names,
             edges,
             clusters,
-            root,
             paintables,
         };
         self.imp().fitted.set(false);
         self.imp().anim_start.set(None);
+        self.refresh_hover();
         self.queue_draw();
     }
 
-    /// Header toggle \"Back edges\": back edges draw only while it is on.
-    #[mutants::skip] // flag flip + redraw; the filter is the tested edge_visible
     /// Highlight `state_id` (selected in the story list) when it is on the
     /// map; `None` clears the highlight.
     #[mutants::skip] // state handoff + redraw; geometry is highlight_rect
@@ -1153,6 +1151,8 @@ impl Canvas {
         self.queue_draw();
     }
 
+    /// Header toggle \"Back edges\": back edges draw only while it is on.
+    #[mutants::skip] // flag flip + redraw; the filter is the tested edge_visible
     pub fn set_show_back_edges(&self, show: bool) {
         self.imp().show_back.set(show);
         self.queue_draw();
@@ -1239,6 +1239,7 @@ impl Canvas {
             imp.anim_start.set(None);
             imp.anim_ticking.set(false);
             imp.content.borrow_mut().edges = edges;
+            self.refresh_hover();
         } else {
             let e = crate::anim::ease_out(t);
             let mut content = imp.content.borrow_mut();
@@ -1281,22 +1282,54 @@ impl Canvas {
             )
         };
         *imp.transform.borrow_mut() = fit_transform(bounds, (w as f64, h as f64));
+        self.refresh_hover();
         self.queue_draw();
     }
 
-    /// First show: center on the root node at 80% of the limiting dimension
-    /// (`initial_view`); fit-all only when no root node exists.
-    #[mutants::skip] // delegates to the tested initial_view/fit_transform
+    /// First show: the map always opens fitted, the whole journey in view.
+    #[mutants::skip] // one-line delegate to fit()
     fn initial_show(&self) {
-        // The map always opens fitted: the whole journey in view.
         self.fit();
     }
+
     #[mutants::skip] // delegates to the tested zoom_at; GUI-only
     fn zoom_around(&self, px: f64, py: f64, factor: f64) {
         let imp = self.imp();
         let t = *imp.transform.borrow();
         *imp.transform.borrow_mut() = zoom_at(t, px, py, factor);
+        self.refresh_hover();
         self.queue_draw();
+    }
+
+    /// Recompute the hovered node and the cursor from the last pointer
+    /// position: the map can move under a still pointer (zoom, fit,
+    /// relayout animation, new content). Returns whether the hover changed.
+    #[mutants::skip] // GTK glue over the tested state_at/focus_node
+    fn refresh_hover(&self) -> bool {
+        let imp = self.imp();
+        if !imp.pointer_inside.get() {
+            return imp.hovered.replace(None).is_some();
+        }
+        let (x, y) = imp.pointer.get();
+        let (over, hovered) = {
+            let logical = imp.transform.borrow().screen_to_logical(x, y);
+            let content = imp.content.borrow();
+            let state = state_at(&content.plan, &imp.expanded.borrow(), logical);
+            let hovered = state
+                .as_deref()
+                .and_then(|s| focus_node(&content.plan, None, Some(s)));
+            (
+                badge_at(&content.plan.nodes, logical).is_some() || state.is_some(),
+                hovered,
+            )
+        };
+        self.set_cursor_from_name(Some(if over { "pointer" } else { "default" }));
+        if *imp.hovered.borrow() != hovered {
+            imp.hovered.replace(hovered);
+            true
+        } else {
+            false
+        }
     }
 
     #[mutants::skip] // GTK input wiring (pan/zoom/pinch/fit/dblclick); manual GUI check deferred
@@ -1338,23 +1371,10 @@ impl Canvas {
             self,
             move |_, x, y| {
                 canvas.imp().pointer.set((x, y));
-                // clickable things (states, badges) show the pointer cursor
-                let (over, hovered) = {
-                    let imp = canvas.imp();
-                    let logical = imp.transform.borrow().screen_to_logical(x, y);
-                    let content = imp.content.borrow();
-                    let state = state_at(&content.plan, &imp.expanded.borrow(), logical);
-                    let hovered = state
-                        .as_deref()
-                        .and_then(|s| focus_node(&content.plan, None, Some(s)));
-                    (
-                        badge_at(&content.plan.nodes, logical).is_some() || state.is_some(),
-                        hovered,
-                    )
-                };
-                canvas.set_cursor_from_name(Some(if over { "pointer" } else { "default" }));
-                if *canvas.imp().hovered.borrow() != hovered {
-                    canvas.imp().hovered.replace(hovered);
+                canvas.imp().pointer_inside.set(true);
+                // clickable things (states, badges) show the pointer cursor;
+                // the node under the pointer takes the focus
+                if canvas.refresh_hover() {
                     canvas.queue_draw();
                 }
             }
@@ -1363,6 +1383,7 @@ impl Canvas {
             #[weak(rename_to = canvas)]
             self,
             move |_| {
+                canvas.imp().pointer_inside.set(false);
                 if canvas.imp().hovered.replace(None).is_some() {
                     canvas.queue_draw();
                 }
@@ -1376,8 +1397,9 @@ impl Canvas {
             self,
             #[upgrade_or]
             glib::Propagation::Proceed,
-            move |_, _dx, dy| {
-                match scroll_zoom(dy) {
+            move |ctrl, _dx, dy| {
+                let surface = ctrl.unit() == gdk::ScrollUnit::Surface;
+                match scroll_zoom(scroll_notches(dy, surface)) {
                     Some(factor) => {
                         let (px, py) = canvas.imp().pointer.get();
                         canvas.zoom_around(px, py, factor);

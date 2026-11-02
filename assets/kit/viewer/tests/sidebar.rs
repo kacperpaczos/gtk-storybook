@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use storybook_kit::model::{Layout, NodePos, VariantPos};
-use storybook_viewer::sidebar::{ViewGroup, build_model, humanize, locate, search};
+use storybook_viewer::sidebar::{ViewGroup, build_model, humanize, search};
 
 fn node(id: &str, lane: u32, depth: u32, order: u32, title: Option<&str>) -> NodePos {
     NodePos {
@@ -171,39 +171,6 @@ fn search_matches_title_view_name_and_state_id_case_insensitively() {
     assert!(search(&m, "nie ma takiego").is_empty());
 }
 
-#[test]
-fn locate_finds_nodes_and_variants_by_flat_row_index() {
-    let m = model();
-    // second view, first row is the node itself
-    assert_eq!(locate(&m, "skill_detail/dirty"), Some((1, 0)));
-    // variants follow their node directly
-    assert_eq!(locate(&m, "skill_detail/plain"), Some((1, 1)));
-    assert_eq!(locate(&m, "skill_detail/broken"), Some((1, 2)));
-    // a node in the first view
-    assert_eq!(locate(&m, "skills/empty"), Some((0, 0)));
-    // unknown id
-    assert_eq!(locate(&m, "nope/unknown"), None);
-}
-
-#[test]
-fn locate_counts_variant_rows_of_preceding_nodes() {
-    let views = vec!["v".to_string()];
-    let layout = Layout {
-        nodes: vec![node("v/a", 0, 0, 0, None), node("v/b", 0, 1, 0, None)],
-        variants: vec![variant("v/a2", "v/a", 0, 0, 0, None)],
-        edges: Vec::new(),
-        engine: "builtin".to_string(),
-        view_titles: BTreeMap::new(),
-        dot_version: None,
-        clusters: Vec::new(),
-    };
-    let m = build_model(&views, &layout);
-    assert_eq!(locate(&m, "v/a"), Some((0, 0)));
-    assert_eq!(locate(&m, "v/a2"), Some((0, 1)));
-    // b sits after a's variant row
-    assert_eq!(locate(&m, "v/b"), Some((0, 2)));
-}
-
 // --- drill-down pages by data dimension -------------------------------------
 
 mod pages_tree {
@@ -278,7 +245,8 @@ mod pages_tree {
     #[test]
     fn root_lists_views_and_view_page_lists_nodes() {
         let ps = pages(&model(), &facets());
-        assert_eq!(ps[0].title, "Widoki");
+        assert_eq!(ps[0].title, "Views");
+        assert_eq!(ps[0].rows[0].subtitle.as_deref(), Some("5 states"));
         assert_eq!(ps[0].rows[0].title, "Instalacja skilla");
         assert_eq!(ps[0].rows[0].target, Target::Page(1));
         let titles: Vec<&str> = ps[1].rows.iter().map(|r| r.title.as_str()).collect();
@@ -351,8 +319,54 @@ mod pages_tree {
             .collect();
         assert_eq!(
             titles,
-            ["Widoki", "Instalacja skilla", "Jeden skill", "Znaleziono: many"]
+            ["Views", "Instalacja skilla", "Jeden skill", "Znaleziono: many"]
         );
         assert_eq!(locate_leaf(&ps, "install/nope"), None);
+    }
+
+    #[test]
+    fn a_state_without_assignment_is_a_plain_leaf_never_a_question_mark() {
+        let mut f = facets();
+        // install/many-p lost its cells (stale cells.json)
+        f.assignment.remove("install/many-p");
+        let ps = pages(&model(), &f);
+        assert!(ps.iter().flat_map(|p| &p.rows).all(|r| !r.title.contains('?')));
+        let one = page(&ps, "Jeden skill");
+        let titles: Vec<&str> = one.rows.iter().map(|r| r.title.as_str()).collect();
+        // known values split; the unassigned state follows as a plain leaf
+        assert_eq!(titles, ["Znaleziono: one", "Znaleziono: many", "Wiele z projektem"]);
+        // every state is reachable exactly once
+        for id in ["install/start", "install/start-p", "install/one", "install/many-1", "install/many-p"] {
+            let n = ps
+                .iter()
+                .flat_map(|p| &p.rows)
+                .filter(|r| r.target == Target::State(id.into()))
+                .count();
+            assert_eq!(n, 1, "{id}");
+        }
+    }
+
+    #[test]
+    fn unknown_values_sort_after_known_classes_in_order_seen() {
+        let mut f = facets();
+        f.assignment.get_mut("install/one").unwrap().insert("found".into(), "zzz".into());
+        let ps = pages(&model(), &f);
+        let one = page(&ps, "Jeden skill");
+        let titles: Vec<&str> = one.rows.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, ["Znaleziono: many", "Znaleziono: zzz"]);
+    }
+
+    #[test]
+    fn labels_fall_back_to_last_axis_segment_and_spaced_class() {
+        use storybook_viewer::sidebar::{axis_label, class_label};
+        let f = Facets::default();
+        assert_eq!(axis_label(&f, "v", "vm.scope_kind"), "Scope kind");
+        assert_eq!(axis_label(&f, "v", "found"), "Found");
+        assert_eq!(class_label(&f, "v", "found", "many_items"), "many items");
+        let labelled = facets();
+        assert_eq!(axis_label(&labelled, "install", "scopes"), "Zasięg");
+        assert_eq!(class_label(&labelled, "install", "scopes", "many"), "globalny + projekt");
+        // a label of another view does not leak
+        assert_eq!(axis_label(&labelled, "other", "scopes"), "Scopes");
     }
 }

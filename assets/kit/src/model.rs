@@ -296,3 +296,15 @@ pub struct EdgeRoute {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrow: Option<Vec<GeoPoint>>,
 }
+
+/// `"skill_detail"` -> `"Skill detail"`: separators become spaces, the
+/// first letter is capitalized. The fallback display name of a view (map
+/// lanes, dot clusters, story menu) when it has no authored `title`.
+pub fn humanize(id: &str) -> String {
+    let spaced = id.replace(['-', '_'], " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}

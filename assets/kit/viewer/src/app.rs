@@ -26,8 +26,9 @@ pub struct ViewerArgs {
     pub start: StartPage,
 }
 
-/// Which page the viewer opens on (`--start list|map`; default: the flow
-/// map — the storybook is graph-first, the story list is secondary).
+/// Legacy `--start list|map` flag: still parsed so old launch commands keep
+/// working, but it has no effect — the viewer is one window with the menu,
+/// the map and the preview side by side.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum StartPage {
     #[default]
@@ -447,6 +448,8 @@ fn build_story(
     let built = fixture.and_then(|json| registry.build(state_id, json, &events));
     let mount = adw::BreakpointBin::new();
     mount.set_hexpand(true);
+    // a breakpoint bin needs a minimum size; the narrowest preset is it
+    mount.set_size_request(story_list::WIDTH_PRESETS[0], 1);
     let (paintable, keep_alive) = match built {
         Ok(widget) => {
             // Dialogs/windows/popovers must never be parented (dialog mode,
@@ -497,7 +500,7 @@ fn activate(
     sb: Rc<Storyboard>,
     registry: Rc<Box<dyn Registry>>,
     initial: Rc<Option<String>>,
-    _start: StartPage, // one window now: both columns are always available
+    _start: StartPage, // legacy flag, no effect (see StartPage)
 ) {
     use std::cell::{Cell, RefCell};
 
@@ -565,7 +568,6 @@ fn activate(
         },
         lane_names,
         sb.layout.edges.clone(),
-        sb.flows.roots.first().cloned(),
         paintables,
     );
 
@@ -680,11 +682,11 @@ fn activate(
     let fit_button = gtk::Button::with_label("Fit");
     let menu_button = gtk::ToggleButton::new();
     menu_button.set_icon_name("sidebar-show-symbolic");
-    menu_button.set_tooltip_text(Some("Menu stanów"));
+    menu_button.set_tooltip_text(Some("State menu"));
     menu_button.set_active(true);
     let preview_button = gtk::ToggleButton::new();
     preview_button.set_icon_name("sidebar-show-right-symbolic");
-    preview_button.set_tooltip_text(Some("Podgląd stanu"));
+    preview_button.set_tooltip_text(Some("State preview"));
     preview_button.set_active(true);
     // Back edges are hidden by default; the header toggle shows them.
     let back_button = gtk::ToggleButton::with_label("Back edges");
@@ -725,6 +727,21 @@ fn activate(
     window.set_title(Some("Storybook"));
     window.set_default_size(1500, 860);
     window.set_content(Some(&outer));
+    window.set_size_request(360, 294);
+    // Narrow windows: the preview overlays the map first, then the menu too
+    // (the header toggles keep working on the overlays).
+    for (max_width, collapse_menu) in [(1100.0, false), (720.0, true)] {
+        let bp = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MaxWidth,
+            max_width,
+            adw::LengthUnit::Sp,
+        ));
+        bp.add_setter(&inner, "collapsed", Some(&true.to_value()));
+        if collapse_menu {
+            bp.add_setter(&outer, "collapsed", Some(&true.to_value()));
+        }
+        window.add_breakpoint(bp);
+    }
     // Header toggles: menu column (start), preview column (end).
     menu_button
         .bind_property("active", &outer, "show-sidebar")
@@ -767,76 +784,94 @@ fn activate(
         })
     };
 
-    // Drill-down rows: a leaf row selected shows its story; a row that
-    // leads further pushes its page.
+    // Exactly one selected leaf across all menu pages.
+    let unselect_others: Rc<dyn Fn(usize)> = {
+        let lists = list.lists.clone();
+        Rc::new(move |keep: usize| {
+            for (index, other) in lists.iter().enumerate() {
+                if index != keep
+                    && let Some(selected) = other.selected_row()
+                {
+                    other.unselect_row(&selected);
+                }
+            }
+        })
+    };
+
+    // Drill-down rows: a leaf row shows its story (on selection, and on
+    // activation, so re-clicking the selected leaf reopens the preview); a
+    // row that leads further pushes its page.
     for (index, page_list) in list.lists.iter().enumerate() {
         let rows = list.specs[index].rows.clone();
         let nav = list.nav.clone();
         let pages = list.pages.clone();
+        let show = show_story.clone();
         page_list.connect_row_activated(move |_, row| {
-            if let Some(crate::sidebar::Target::Page(child)) =
-                rows.get(row.index() as usize).map(|r| &r.target)
-                && let Some(page) = pages.get(*child)
-            {
-                nav.push(page);
+            match rows.get(row.index() as usize).map(|r| &r.target) {
+                Some(crate::sidebar::Target::Page(child)) => {
+                    if let Some(page) = pages.get(*child) {
+                        nav.push(page);
+                    }
+                }
+                Some(crate::sidebar::Target::State(state_id)) => show(state_id),
+                None => {}
             }
         });
         let rows = list.specs[index].rows.clone();
         page_list.connect_row_selected(clone!(
             #[strong]
             show_story,
+            #[strong]
+            unselect_others,
             move |_, row| {
                 let Some(row) = row else { return };
                 if let Some(crate::sidebar::Target::State(state_id)) =
                     rows.get(row.index() as usize).map(|r| &r.target)
                 {
+                    unselect_others(index);
                     show_story(state_id);
                 }
             }
         ));
     }
 
-    // Programmatic selection by state id (--story, canvas double-click,
-    // search result, initial state): walk the drill-down to the leaf's page
-    // and select its row — the selection itself shows the story.
+    // Programmatic selection by state id (--story, map click, search hit):
+    // walk the drill-down to the leaf's page, select its row and show the
+    // story (explicitly: selecting an already selected row emits nothing).
     let navigate: Rc<dyn Fn(&str)> = {
         let specs = list.specs.clone();
         let nav = list.nav.clone();
         let pages = list.pages.clone();
         let lists = list.lists.clone();
+        let show_story = show_story.clone();
+        let unselect_others = unselect_others.clone();
         Rc::new(move |state_id: &str| {
             let Some((page, row)) = crate::sidebar::locate_leaf(&specs, state_id) else {
                 return;
             };
             if nav.visible_page().as_ref() != pages.get(page) {
-                // collapse the stack (search results included) first
                 nav.pop_to_page(&pages[0]);
                 for step in crate::sidebar::page_path(&specs, page).into_iter().skip(1) {
                     nav.push(&pages[step]);
                 }
             }
-            // exactly one selected row across the pages
-            for (index, other) in lists.iter().enumerate() {
-                if index != page
-                    && let Some(selected) = other.selected_row()
-                {
-                    other.unselect_row(&selected);
-                }
-            }
+            unselect_others(page);
             if let Some(row_widget) = lists[page].row_at_index(row as i32) {
                 lists[page].select_row(Some(&row_widget));
             }
+            show_story(state_id);
         })
     };
 
-    // Search: while the query is non-empty the sidebar shows a flat
-    // results page (title + owning view); Escape / an empty query pops
-    // back to the previous page.
+    // Search: while the query is non-empty the root page shows flat
+    // results (title + owning view) in place of the view list; Escape / an
+    // empty query brings the view list back.
     let search_ids = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
     {
         let model = model.clone();
         let nav = list.nav.clone();
-        let search_page = list.search_page.clone();
+        let root_page = list.pages[0].clone();
+        let root_stack = list.root_stack.clone();
         let search_list = list.search_list.clone();
         let results = search_ids.clone();
         list.search_entry.connect_changed(move |entry| {
@@ -869,12 +904,9 @@ fn activate(
                 row.set_tooltip_text(Some(state_id));
                 search_list.append(&row);
             }
-            if text.is_empty() {
-                if nav.visible_page().as_ref() == Some(&search_page) {
-                    nav.pop();
-                }
-            } else if nav.visible_page().as_ref() != Some(&search_page) {
-                nav.push(&search_page);
+            root_stack.set_visible_child_name(if text.is_empty() { "pages" } else { "results" });
+            if !text.is_empty() && nav.visible_page().as_ref() != Some(&root_page) {
+                nav.pop_to_page(&root_page);
             }
         });
         // Escape stops the search: back to the pages.
@@ -892,7 +924,7 @@ fn activate(
             list.search_list.connect_row_activated(move |_, row| {
                 let hit = search_ids.borrow().get(row.index() as usize).cloned();
                 if let Some(state_id) = hit {
-                    // clears the query first, popping the results page
+                    // clears the query first: the view list returns
                     entry.set_text("");
                     navigate(&state_id);
                 }
@@ -900,17 +932,35 @@ fn activate(
         }
     }
 
-    // Double-click on a canvas node opens it in the story list.
+    // A click on a map state selects it in the menu and the preview.
     canvas_widget.connect_open_story(clone!(
         #[strong]
-        show_story,
-        #[strong]
         navigate,
-        move |state_id| {
-            navigate(state_id);
-            show_story(state_id);
-        }
+        move |state_id| navigate(state_id)
     ));
+
+    // Ctrl+F anywhere: back to the menu root with the search entry focused
+    // (the menu column is shown if it was hidden).
+    {
+        let nav = list.nav.clone();
+        let root_page = list.pages[0].clone();
+        let search_bar = list.search_bar.clone();
+        let entry = list.search_entry.clone();
+        let outer = outer.clone();
+        let shortcuts = gtk::ShortcutController::new();
+        shortcuts.set_scope(gtk::ShortcutScope::Managed);
+        shortcuts.add_shortcut(gtk::Shortcut::new(
+            gtk::ShortcutTrigger::parse_string("<Control>f"),
+            Some(gtk::CallbackAction::new(move |_, _| {
+                outer.set_show_sidebar(true);
+                nav.pop_to_page(&root_page);
+                search_bar.set_search_mode(true);
+                entry.grab_focus();
+                glib::Propagation::Stop
+            })),
+        ));
+        window.add_controller(shortcuts);
+    }
     list.preview_close.connect_clicked(clone!(
         #[weak]
         inner,
@@ -964,7 +1014,7 @@ fn activate(
             .set_color_scheme(story_list::theme_scheme(choice.selected() as usize));
     });
 
-    // Initial state: the menu starts on its first level ("Widoki") with
+    // Initial state: the menu starts on its first level ("Views") with
     // nothing selected and the preview hidden — unless --story names a
     // known state, which is then selected (menu walks to it, preview shown).
     match initial
@@ -975,7 +1025,6 @@ fn activate(
         None => inner.set_show_sidebar(false),
     }
 
-    // --- windows: map first; --start list brings the story list forward ---
     window.present();
 }
 

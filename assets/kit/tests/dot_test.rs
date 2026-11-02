@@ -71,13 +71,13 @@ fn build_dot_clusters_labels_and_back_edges() {
 
     // deterministic header
     assert!(src.starts_with("digraph G {\nrankdir=LR;\n"), "{src}");
-    // one cluster per view, labeled with the view id
+    // one cluster per view, labeled with the humanized view id
     assert!(
-        src.contains("subgraph \"cluster_a\" {\nlabel=\"a\";\n"),
+        src.contains("subgraph \"cluster_a\" {\nlabel=\"A\";\n"),
         "{src}"
     );
     assert!(
-        src.contains("subgraph \"cluster_b\" {\nlabel=\"b\";\n"),
+        src.contains("subgraph \"cluster_b\" {\nlabel=\"B\";\n"),
         "{src}"
     );
     // node ids quoted, titles escaped (quotes and backslashes doubled)
@@ -224,7 +224,7 @@ fn build_dot_uses_roomier_spacing() {
     assert!(src.contains("nodesep=0.9;\n"), "{src}");
     assert!(src.contains("ranksep=1.6;\n"), "{src}");
     assert!(
-        src.contains("subgraph \"cluster_a\" {\nlabel=\"a\";\nmargin=20;\n"),
+        src.contains("subgraph \"cluster_a\" {\nlabel=\"A\";\nmargin=20;\n"),
         "{src}"
     );
 }
@@ -347,9 +347,9 @@ fn cluster_labels_use_view_display_names() {
         src.contains("subgraph \"cluster_a\" {\nlabel=\"Widok A\";\n"),
         "{src}"
     );
-    // a view without a display name keeps its id
+    // a view without a display name gets its humanized id
     assert!(
-        src.contains("subgraph \"cluster_b\" {\nlabel=\"b\";\n"),
+        src.contains("subgraph \"cluster_b\" {\nlabel=\"B\";\n"),
         "{src}"
     );
 }
@@ -367,5 +367,5 @@ fn layout_with_dot_labels_clusters_with_display_names() {
     let a = placed.clusters.iter().find(|c| c.view == "a").unwrap();
     assert_eq!(a.label, "Widok A");
     let b = placed.clusters.iter().find(|c| c.view == "b").unwrap();
-    assert_eq!(b.label, "b");
+    assert_eq!(b.label, "B");
 }

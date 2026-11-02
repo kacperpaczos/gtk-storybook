@@ -36,12 +36,7 @@ pub struct NodeGroup {
 /// `"skill_detail"` -> `"Skill detail"`: separators become spaces, the
 /// first letter is capitalized. Fallback display name for views.
 pub fn humanize(id: &str) -> String {
-    let spaced = id.replace(['-', '_'], " ");
-    let mut chars = spaced.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
+    storybook_kit::model::humanize(id)
 }
 
 /// Build the sidebar model: views in inventory order, each view's flow
@@ -130,28 +125,6 @@ pub fn search(model: &[ViewGroup], query: &str) -> Vec<String> {
     hits
 }
 
-/// `(view index, flat row index)` of a state for programmatic selection:
-/// the row is counted over the view page's rows — each node one row,
-/// directly followed by its variant rows. `None` for an unknown id.
-pub fn locate(model: &[ViewGroup], state_id: &str) -> Option<(usize, usize)> {
-    for (view_idx, view) in model.iter().enumerate() {
-        let mut row = 0;
-        for node in &view.nodes {
-            if node.state_id == state_id {
-                return Some((view_idx, row));
-            }
-            row += 1;
-            for (variant, _) in &node.variants {
-                if variant == state_id {
-                    return Some((view_idx, row));
-                }
-                row += 1;
-            }
-        }
-    }
-    None
-}
-
 // --- drill-down pages: views -> flow nodes -> data dimensions -> states ----
 
 /// Data facts the dimension tree is built from.
@@ -185,7 +158,7 @@ pub struct RowSpec {
     pub target: Target,
 }
 
-/// One drill-down page; page 0 is the root ("Widoki").
+/// One drill-down page; page 0 is the root ([`ROOT_TITLE`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageSpec {
     pub title: String,
@@ -193,14 +166,23 @@ pub struct PageSpec {
     pub rows: Vec<RowSpec>,
 }
 
-/// Human name of a dimension: authored label, else the humanized axis path.
+/// Title of the root page listing the views.
+pub const ROOT_TITLE: &str = "Views";
+
+/// Row subtitle for a group of `n` states.
+pub fn state_count(n: usize) -> String {
+    format!("{n} states")
+}
+
+/// Human name of a dimension: authored label, else the humanized last
+/// segment of the axis path (`vm.scopes` -> "Scopes").
 pub fn axis_label(facets: &Facets, view: &str, axis: &str) -> String {
     facets
         .labels
         .get(view)
         .and_then(|l| l.get(axis))
         .cloned()
-        .unwrap_or_else(|| humanize(axis))
+        .unwrap_or_else(|| humanize(axis.rsplit('.').next().unwrap_or(axis)))
 }
 
 /// Human name of a dimension value: authored label, else the class id.
@@ -217,12 +199,15 @@ pub fn class_label(facets: &Facets, view: &str, axis: &str, class: &str) -> Stri
 /// its flow nodes in journey order (a node without variants is a leaf);
 /// a node page splits the node and its variants by the first dimension
 /// (axis order) whose value differs among them, one row per value in class
-/// order — a value held by one state is a leaf ("Zasięg: globalny"), by
-/// several a further page split the same way. Dimensions constant within
-/// a group never get a level.
+/// order (unknown values after, in order seen) — a value held by one state
+/// is a leaf ("Scope: global"), by several a further page split the same
+/// way. Dimensions constant within a group never get a level. A state with
+/// no assignment for the splitting dimension (stale or partial
+/// `cells.json`) is never a "?" branch: it stays a plain leaf after the
+/// value rows, so every state is reachable exactly once.
 pub fn pages(model: &[ViewGroup], facets: &Facets) -> Vec<PageSpec> {
     let mut out = vec![PageSpec {
-        title: "Widoki".to_string(),
+        title: ROOT_TITLE.to_string(),
         parent: None,
         rows: Vec::new(),
     }];
@@ -235,7 +220,7 @@ pub fn pages(model: &[ViewGroup], facets: &Facets) -> Vec<PageSpec> {
         });
         out[0].rows.push(RowSpec {
             title: view.title.clone(),
-            subtitle: Some(format!("Liczba stanów: {}", view.count)),
+            subtitle: Some(state_count(view.count)),
             target: Target::Page(view_page),
         });
         for node in &view.nodes {
@@ -257,7 +242,7 @@ pub fn pages(model: &[ViewGroup], facets: &Facets) -> Vec<PageSpec> {
             });
             out[view_page].rows.push(RowSpec {
                 title: node.title.clone(),
-                subtitle: Some(format!("Liczba stanów: {}", states.len())),
+                subtitle: Some(state_count(states.len())),
                 target: Target::Page(node_page),
             });
             split(&mut out, node_page, &view.id, &states, facets);
@@ -274,18 +259,19 @@ fn split(
     states: &[(String, String)],
     facets: &Facets,
 ) {
-    let value = |state: &str, axis: &str| -> String {
+    let value = |state: &str, axis: &str| -> Option<String> {
         facets
             .assignment
             .get(state)
             .and_then(|a| a.get(axis))
             .cloned()
-            .unwrap_or_else(|| "?".to_string())
     };
     let axes = facets.axes.get(view).cloned().unwrap_or_default();
+    // differing = at least two distinct known values; unknowns never count
     let differing = axes.iter().find(|(axis, _)| {
-        let first = value(&states[0].0, axis);
-        states.iter().any(|(s, _)| value(s, axis) != first)
+        let mut known = states.iter().filter_map(|(s, _)| value(s, axis));
+        let first = known.next();
+        known.any(|v| Some(&v) != first.as_ref())
     });
     let Some((axis, class_order)) = differing else {
         // nothing tells them apart: plain leaves
@@ -300,8 +286,12 @@ fn split(
     };
     // group by value: class order first, unknown values after, in order seen
     let mut groups: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    let mut unassigned: Vec<(String, String)> = Vec::new();
     for (state, title) in states {
-        let v = value(state, axis);
+        let Some(v) = value(state, axis) else {
+            unassigned.push((state.clone(), title.clone()));
+            continue;
+        };
         match groups.iter_mut().find(|(g, _)| *g == v) {
             Some((_, members)) => members.push((state.clone(), title.clone())),
             None => groups.push((v, vec![(state.clone(), title.clone())])),
@@ -327,11 +317,18 @@ fn split(
             });
             out[page].rows.push(RowSpec {
                 title: label,
-                subtitle: Some(format!("Liczba stanów: {}", members.len())),
+                subtitle: Some(state_count(members.len())),
                 target: Target::Page(child),
             });
             split(out, child, view, &members, facets);
         }
+    }
+    for (state, title) in unassigned {
+        out[page].rows.push(RowSpec {
+            title,
+            subtitle: None,
+            target: Target::State(state),
+        });
     }
 }
 
