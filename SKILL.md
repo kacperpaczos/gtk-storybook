@@ -1,9 +1,9 @@
 ---
-name: libadwaita-storybook
+name: gtk-storybook
 description: Builds a `storybook/` UI-shell app for any GTK4/libadwaita project (Rust, Python, C, Vala, GJS) in the host's own language, rendering every state of every view from the app's real view-models plus an endless-canvas flow map from the first view to every leaf. Use when asked for a storybook, a map of all views/states/transitions, or UI-state coverage of a GTK app.
 ---
 
-# GTK / libadwaita storybook
+# GTK storybook
 
 You give a GTK4 app a **storybook**: everything lives in `storybook/` in the host repo. It reuses the host's real view code, templates, CSS and resources, in the host's language and bindings, and renders each view from **view-model fixtures** — the app's real, coded presentation state, never invented screens. It shows a story list and a **flow map** (lanes per view, depth from the first view, live thumbnails).
 
