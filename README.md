@@ -22,7 +22,7 @@ Tools build on these habits. **Storybook** is easiest because of habit 1: a "sto
 
 ### Why GTK apps do not
 
-A typical GTK app (Rust, C, C++, Python, GTK3 or GTK4) is written differently, and there is nothing wrong with that:
+A typical GTK app (in any language, on GTK3 or GTK4) is written differently, and there is nothing wrong with that:
 
 - Widgets **hold their own state**. A label's text, a button's sensitivity or a stack's visible page is set imperatively from many places.
 - The "data" is often **spread across objects**: GObject properties, fields on a window struct, a database handle, a subprocess.
@@ -37,17 +37,16 @@ It rebuilds the missing pieces **beside** the app, inside `storybook/`, and lets
 | Web habit | What the skill builds for a GTK app |
 |---|---|
 | props → screen | a **view-model (VM) contract**: each view is built from one plain, serializable value of the app's real types |
-| state as JSON | **fixtures**: one realistic VM value per state, checked by loading it into the real type |
+| state as JSON | **fixtures**: one realistic VM value per state; `sbk` checks its shape against the scanned fields, and the storybook decodes it into the real type when it builds the story |
 | list of all states | a finite **presentation model**: for each view, the data dimensions its code actually reads (for example *list: empty / one / many*, *network: ok / error*), grouped into equivalence classes |
 | state machine graph | a **flow model**: entry screens, an outcome for every action of every reachable step, and back/self/leaf markers |
 | Storybook + XState visualizer | a native **viewer**: menu, flow map with live thumbnails, preview |
 
-The `sbk` checker is a deterministic Rust CLI. It derives the dimensions from the code and multiplies them into **cells** (one cell = one combination of classes, for example *list: many × network: error*). It generates fixtures and checks **completeness of the declared model**:
+The `sbk` checker is a deterministic Rust CLI. It extracts the data fields each view reads (`scan`). The agent splits them into classes in `states/<view>.toml`, and `sbk` multiplies those into **cells** (one cell = one combination of classes, for example *list: many × network: error*). It generates fixture skeletons and checks **completeness of the declared model**:
 - every cell has a story;
 - every **finding** (code the extractor could not resolve) has a **disposition**: covered by a story, or excluded with a reason;
 - every action has an outcome;
-- everything is reachable from an entry screen;
-- the map layout is reproducible.
+- everything is reachable from an entry screen.
 
 This is a proof about the model the agent declared, not about every behaviour the app could ever have. A view the agent never listed, or a transition written down wrongly, is not caught by arithmetic. That is why each judgement call (which views exist, which classes are equivalent, which values are realistic, where an action leads) is written into a file you can review, and checked by a **gate**: a check that must be green before the storybook counts as done. A red gate means "fix the model or the code", never "relax the checker".
 
@@ -55,9 +54,10 @@ This is a proof about the model the agent declared, not about every behaviour th
 
 - **Story menu** (GNOME HIG drill-down): views → user steps → data dimensions → single states, plus search (Ctrl+F). Human names come from `states/<view>.toml`: `title`, `[titles]` and `[labels]`.
 - **Flow map**: an endless canvas laid out by Graphviz `dot` (builtin engine as fallback). Each node is a live thumbnail of the real widget. The map is calm by default: no outlines, unlabelled edges. Hovering or selecting a state focuses it. Its transitions turn accent and show their action names, and unrelated parts dim. The `+N` chip expands a step's data variants inline, and the map re-flows with an animation so nothing overlaps.
-- **Live preview** of the selected state at phone/tablet/desktop widths, in light or dark, with an Events pane that logs the actions the real view fires.
+- **Live preview** of the selected state at four preset widths (360, 600, 900, 1200 px), in the system, light or dark theme, with an Events pane that logs the actions the real view fires.
+- **Render proof** (`--check-render`, needs a display): every story builds, building it twice gives the same widget tree (no hidden widget-local state), and look-alike states are reported.
 - **One window, three columns**: menu | map | preview. Clicking on the map or in the menu selects the same state in all three. The side columns can be hidden.
-- **Gates**: `sbk verify` runs them all: contract, coverage, fixtures, flows, titles, fresh fingerprints (the code has not changed since extraction) and a deterministic `layout.json`.
+- **Gates**: `sbk verify` runs them all: contract, a fresh scan matching `inventory.json` (the code has not changed since extraction), cells, fixtures, coverage, flows and titles. When all are green it writes the map layout `layout.json` (same input, same file).
 
 The steps use these `sbk` commands: `probe` (census and tiers), `contract`, `scan` (extract axes, actions, findings), `expand` (cells), `gen` (fixtures), `check fixtures|coverage|flows|titles`, `scaffold` (the shell) and `verify`.
 
@@ -69,7 +69,7 @@ git clone https://github.com/kacperpaczos/gtk-storybook ~/.claude/skills/gtk-sto
 
 Any agent that reads `SKILL.md` skills works the same way: put the folder into its skills directory. Then ask: *"build a storybook for this GTK app"*. The skill copies [`assets/kit/`](assets/kit/) into `storybook/kit/` of the host repo and walks through the steps in [SKILL.md](SKILL.md). Formats and the viewer spec are in [references/](references/).
 
-Once it is built, open the viewer from the host repo (Rust): `cargo run --manifest-path storybook/Cargo.toml`. Re-run the gates after changing the app: `cargo run --manifest-path storybook/kit/Cargo.toml --bin sbk -- verify`.
+Once it is built, open the viewer from the host repo (Rust): `cargo run --manifest-path storybook/Cargo.toml`. Re-run the gates after changing the app: `cargo run --manifest-path storybook/kit/Cargo.toml --bin sbk -- verify`. It checks the model and the fixture files. Decoding fixtures into the real types happens in the storybook's own tests (`cargo test --manifest-path storybook/Cargo.toml`) and whenever the viewer builds a story.
 
 ## Requirements
 
@@ -84,15 +84,15 @@ Rust toolchain (for `sbk` and the Rust viewer), GTK 4.14+ and libadwaita 1.5+ de
 
 ## Status and honest limits
 
-**Unreleased changes after v0.1.**
+The `main` branch is ahead of the v0.1 tag.
 
-**Works today.** The full pipeline and the Rust/GTK4 viewer for Rust (gtk-rs) hosts, used on a real app (SkillCraft, Rust + libadwaita: 10 views, 20 flow nodes). The extractor reads Rust only. `references/adapters.md` describes how the other languages would plug in. None of them works yet.
+**Works today.** The full pipeline and the Rust/GTK4 viewer for Rust (gtk-rs) hosts, used on a real, not yet public app (SkillCraft, Rust + libadwaita: 11 views, 20 flow nodes, 110 cells). The extractor reads Rust only. `references/adapters.md` describes how other languages would plug in. None of them works yet.
 
 **Not there yet.** These are planned, in this order:
 
-1. **Host untouched.** Today step 2 may edit the host to meet the VM contract. Most edits are additive (for example a VM type beside a view). Moving side effects out of a view changes behaviour, so it happens only where the host's tests cover it or you accept a manual check. Every edit is listed in the final report. The goal is zero edits outside `storybook/`: the storybook imports the real host code and runs it with fakes for files, network, subprocesses and root.
+1. **Host untouched.** Today step 2 may edit the host to meet the VM contract. Most edits are additive (for example a VM type beside a view). Moving side effects out of a view changes behaviour, so it happens only where the host's tests cover it or you accept a manual check. Every edit is listed in the final report. The goal is zero edits outside `storybook/`: the storybook imports the real host code and runs it with fakes for files, network, subprocesses and privileged (root / pkexec) operations.
 2. **Computed transitions.** Today the agent writes `flows.toml` and the gates check it. The goal is the missing third habit, an `update(state, message) -> (state, effects)` function obtained from the host's handlers. With it a tool explores the graph, `flows.toml` is generated, and `sbk paths` lists the shortest path to every state.
-3. **More hosts.** First-class C, C++ (gtkmm) and Python adapters, GTK3 as well as GTK4. The first external test target is [linuxmint/mintupdate](https://github.com/linuxmint/mintupdate) (Python, GTK3).
+3. **More hosts.** First-class Python, C and C++ (gtkmm) adapters, GTK3 as well as GTK4. The first external test target is [linuxmint/mintupdate](https://github.com/linuxmint/mintupdate) (Python, GTK3).
 
 ## License
 

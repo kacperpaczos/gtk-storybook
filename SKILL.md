@@ -1,6 +1,6 @@
 ---
 name: gtk-storybook
-description: Builds a `storybook/` UI-shell app for any GTK4/libadwaita project (Rust, Python, C, Vala, GJS) in the host's own language, rendering every state of every view from the app's real view-models plus an endless-canvas flow map from the first view to every leaf. Use when asked for a storybook, a map of all views/states/transitions, or UI-state coverage of a GTK app.
+description: Builds a `storybook/` UI-shell app for a Rust (gtk-rs) GTK4/libadwaita project (other languages are planned, see references/adapters.md), rendering every state of every view from the app's real view-models plus an endless-canvas flow map from the first view to every leaf. Use when asked for a storybook, a map of all views/states/transitions, or UI-state coverage of a GTK app.
 ---
 
 # GTK storybook
@@ -30,9 +30,9 @@ Copy the kit from [`assets/kit/`](assets/kit/) to `storybook/kit/` and build the
    *Done when* `sbk expand --check` is green and `sbk check titles` reports no missing titles: findings disposed, guards consistent, each view within its cell budget. Over budget stays red until you add guards or equivalences; sampling never counts as complete.
 
 5. **Fixtures.** `sbk gen --write` synthesizes one deterministic fixture per cell; replace placeholders with realistic values (long text for overflow cells, real-looking names and paths). Any string still equal to a generated placeholder (`text-<hex>`) keeps `sbk check fixtures` red. Where the user runs the host with the capture probe, curate captured VMs into fixtures — each must still map to a cell.
-   *Done when* `sbk check fixtures` is green **and** the host-language validator (`storybook/validate`, from the adapter) loads every fixture into the real VM type.
+   *Done when* `sbk check fixtures` is green **and** the host-language validator (from the adapter; for Rust a `storybook/tests/fixtures_decode.rs` test you write — the kit ships no template yet) decodes every fixture into the real VM type.
 
-6. **Shell.** `sbk scaffold --lang <lang>` generates the storybook shell in the host language from the kit templates; fill its registry so each view id builds the host's real view from a fixture with recording actions.
+6. **Shell.** `sbk scaffold` generates the storybook shell from the kit templates (Rust; `--templates <dir>` points at another template set); fill its registry so each view id builds the host's real view from a fixture with recording actions.
    *Done when* the shell builds/imports cleanly with the host's toolchain and `sbk check coverage` is green.
 
 7. **Flows.** In `storybook/flows.toml` set `roots` (first screen a user sees; conditional roots allowed), an edge for every action of every **flow node** — the user-reachable steps, which appear in `roots`, edges or terminals (candidates from step 3 plus your reading), `back` for history pops, `self` for actions that stay in place, `leaf` for intended ends. Mere data combinations of a step are **not** nodes: list them under `[variants]` of that step (same view).

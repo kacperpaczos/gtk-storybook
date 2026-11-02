@@ -1,6 +1,6 @@
 # Language adapters
 
-Each adapter supplies five things; the checker, formats and layout stay shared. Support status is published honestly in the kit README.
+Each adapter supplies five things; the checker, formats and layout stay shared. The **Status** row is the honest support level: only Rust works end to end today. Planned scope (decided 2026-11): Python, C and C++ (gtkmm) hosts, on GTK3 as well as GTK4; the C++ and GTK3 columns are still to be written, and the Vala and GJS columns are earlier notes, not commitments.
 
 | | Rust (gtk-rs) | Python (PyGObject) | C (GObject) | Vala | GJS |
 |---|---|---|---|---|---|
@@ -9,7 +9,7 @@ Each adapter supplies five things; the checker, formats and layout stay shared. 
 | **VM + codec** | struct + serde | `@dataclass` (+ `asdict`/from-dict) or GObject with data properties | struct + `to_json`/`from_json` (json-glib) or data-only GObject | class/struct + json-glib | plain object / GObject + `JSON` |
 | **Actions** | struct of `Rc<dyn Fn>` | object/Protocol of callables, or view signals | struct of callbacks, or view signals / `GActionGroup` | delegates or signals | object of functions or signals |
 | **Extractor** | `syn` (static, authoritative) | `ast` + runtime reflection (advisory static) | GIR + libclang with compile_commands.json | valac GIR + source | GIR + tree-sitter (advisory) |
-| **Validator** (`storybook/validate`) | `cargo run --bin validate` decoding fixtures into VM types | `python -m storybook.validate` constructing dataclasses/GObjects | small C program via json-glib | small Vala program | `gjs -m storybook/validate.js` |
+| **Validator** | a `storybook/tests/fixtures_decode.rs` test (`cargo test`) decoding every fixture into the VM types (no kit template yet) | `python -m storybook.validate` constructing dataclasses/GObjects | small C program via json-glib | small Vala program | `gjs -m storybook/validate.js` |
 | **Purity gate** | clippy `disallowed-methods` in the view crate | AST import/call scan of view modules (`os`, `subprocess`, `socket`, `Gio.File*`, backend modules) | link/symbol scan of view TUs (`g_file_*`, `g_subprocess_*`, `soup_*`, backend headers) | same as C on generated C | AST scan |
 | **Shell** | `storybook/Cargo.toml` (own workspace) + viewer crate | `storybook/__main__.py` + viewer package | `storybook/meson.build` | `storybook/meson.build` | `storybook/main.js` |
 
