@@ -1325,3 +1325,27 @@ fn focus_set_ignores_hidden_back_edges() {
     let shown: Vec<String> = focus_set(&edges, "b", true).into_iter().collect();
     assert_eq!(shown, ["a", "b"]);
 }
+
+#[test]
+fn grid_counts_as_drawn_only_once_the_rect_grew_past_the_thumbnail() {
+    use storybook_viewer::canvas::grid_shown;
+    let expanded: std::collections::BTreeSet<String> = ["v/a".to_string()].into();
+    let mut plan = hl_plan();
+    plan.nodes[0].rect.h = NODE_H + 0.5;
+    assert!(!grid_shown(&plan.nodes[0], &expanded));
+    plan.nodes[0].rect.h = NODE_H + 0.6;
+    assert!(grid_shown(&plan.nodes[0], &expanded));
+}
+
+#[test]
+fn state_at_stops_right_below_the_title_strip() {
+    use storybook_viewer::canvas::state_at;
+    let plan = hl_plan();
+    let none = Default::default();
+    let x = 110.0;
+    assert_eq!(
+        state_at(&plan, &none, (x, 50.0 + NODE_H + TITLE_H - 1.0)).as_deref(),
+        Some("v/a")
+    );
+    assert_eq!(state_at(&plan, &none, (x, 50.0 + NODE_H + TITLE_H + 1.0)), None);
+}
