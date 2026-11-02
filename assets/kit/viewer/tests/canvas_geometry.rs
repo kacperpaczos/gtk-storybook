@@ -422,14 +422,17 @@ fn content_bounds_ignores_edges_to_unknown_states_and_empty_input() {
 }
 
 #[test]
-fn scroll_zoom_needs_ctrl_and_follows_the_wheel_direction() {
-    // Regression (review Important 3): Ctrl+scroll must zoom, plain scroll
-    // passes on to (future) scrolling.
-    assert_eq!(scroll_zoom(false, -1.0), None);
-    assert_eq!(scroll_zoom(true, -1.0), Some(1.1));
-    assert_eq!(scroll_zoom(true, 1.0), Some(1.0 / 1.1));
-    // A directionless notch cannot zoom in.
-    assert_eq!(scroll_zoom(true, 0.0), Some(1.0 / 1.1));
+fn scroll_zooms_without_modifier_and_follows_the_wheel_direction() {
+    // user: zoom with the plain wheel, no Ctrl
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    assert!(close(scroll_zoom(-1.0).unwrap(), 1.1));
+    assert!(close(scroll_zoom(1.0).unwrap(), 1.0 / 1.1));
+    // smooth touchpad deltas scale, big jumps are clamped to 3 notches
+    assert!(close(scroll_zoom(-0.5).unwrap(), 1.1f64.powf(0.5)));
+    assert!(close(scroll_zoom(-10.0).unwrap(), 1.1f64.powi(3)));
+    assert!(close(scroll_zoom(10.0).unwrap(), 1.1f64.powi(-3)));
+    // no vertical motion, no zoom
+    assert_eq!(scroll_zoom(0.0), None);
 }
 
 #[test]
@@ -704,6 +707,7 @@ fn variant(state_id: &str, variant_of: &str, lane: u32, depth: u32, order: u32) 
     VariantPos {
         state_id: state_id.to_string(),
         variant_of: variant_of.to_string(),
+        title: None,
         lane,
         depth,
         order,
@@ -758,8 +762,8 @@ fn badge_exists_only_for_nodes_with_variants() {
     assert_eq!(badge_at(&nodes, inside).unwrap().state_id, "v/a");
     assert!(badge_at(&nodes, (r.x + 2.0, r.y + 2.0)).is_none());
     assert!(badge_at(&nodes, (300.0 + inside.0, inside.1)).is_none());
-    assert_eq!(badge_label(2), "+2 variants");
-    assert_eq!(badge_label(0), "+0 variants");
+    assert_eq!(badge_label(2), "+2");
+    assert_eq!(badge_label(12), "+12");
 }
 
 #[test]
@@ -1034,6 +1038,7 @@ fn plan_dot_draws_nodes_at_stored_rects() {
         storybook_kit::model::VariantPos {
             state_id: "b/one".to_string(),
             variant_of: "b/s3".to_string(),
+            title: None,
             lane: 1,
             depth: 2,
             order: 0,
@@ -1041,6 +1046,7 @@ fn plan_dot_draws_nodes_at_stored_rects() {
         storybook_kit::model::VariantPos {
             state_id: "b/two".to_string(),
             variant_of: "b/s3".to_string(),
+            title: None,
             lane: 1,
             depth: 2,
             order: 1,
@@ -1157,4 +1163,186 @@ fn dot_edge_chains_and_cluster_frames_carry_geometry() {
     let frame = storybook_viewer::canvas::cluster_frame(&cluster);
     assert!((frame.rect.w - 100.0).abs() < 0.001);
     assert_eq!(cluster.label, "a");
+}
+
+// --- selection highlight (story list -> map sync) ---------------------------
+
+fn hl_plan() -> storybook_viewer::canvas::CanvasPlan {
+    use storybook_viewer::canvas::{CanvasPlan, VariantGeometry};
+    let rect = Rect {
+        x: 100.0,
+        y: 50.0,
+        w: NODE_W,
+        h: NODE_H,
+    };
+    let node = |id: &str, count: u32, rect: Rect| NodeGeometry {
+        state_id: id.to_string(),
+        lane: 0,
+        depth: 0,
+        order: 0,
+        title: None,
+        variant_count: count,
+        rect,
+    };
+    let variant = |id: &str| VariantGeometry {
+        state_id: id.to_string(),
+        variant_of: "v/a".to_string(),
+        title: None,
+        rect,
+    };
+    CanvasPlan {
+        nodes: vec![
+            node("v/a", 2, rect),
+            node(
+                "v/b",
+                0,
+                Rect {
+                    x: 500.0,
+                    ..rect
+                },
+            ),
+        ],
+        variants: vec![variant("v/a1"), variant("v/a2")],
+        lanes: Default::default(),
+        clusters: vec![],
+        bounds: rect,
+    }
+}
+
+#[test]
+fn highlight_covers_node_thumbnail_and_title_strip() {
+    use storybook_viewer::canvas::highlight_rect;
+    let plan = hl_plan();
+    let h = highlight_rect(&plan, &Default::default(), "v/b").unwrap();
+    assert_eq!(
+        h,
+        Rect {
+            x: 500.0,
+            y: 50.0,
+            w: NODE_W,
+            h: NODE_H + TITLE_H
+        }
+    );
+}
+
+#[test]
+fn highlight_of_collapsed_variant_falls_back_to_its_node() {
+    use storybook_viewer::canvas::highlight_rect;
+    let plan = hl_plan();
+    let h = highlight_rect(&plan, &Default::default(), "v/a2").unwrap();
+    assert_eq!(h.x, 100.0);
+    assert_eq!(h.h, NODE_H + TITLE_H);
+}
+
+#[test]
+fn highlight_of_expanded_variant_is_its_grid_cell() {
+    use storybook_viewer::canvas::{highlight_rect, variant_cells};
+    let mut plan = hl_plan();
+    // an expanded node's rect grows around its grid
+    plan.nodes[0].rect.h = NODE_H + 200.0;
+    let expanded: std::collections::BTreeSet<String> = ["v/a".to_string()].into();
+    let cells = variant_cells(plan.nodes[0].rect, 2);
+    assert_eq!(highlight_rect(&plan, &expanded, "v/a1"), Some(cells[0]));
+    assert_eq!(highlight_rect(&plan, &expanded, "v/a2"), Some(cells[1]));
+    // the node itself is still thumbnail + title, not the grown box
+    assert_eq!(
+        highlight_rect(&plan, &expanded, "v/a").unwrap().h,
+        NODE_H + TITLE_H
+    );
+}
+
+#[test]
+fn highlight_is_none_for_states_off_the_map() {
+    use storybook_viewer::canvas::highlight_rect;
+    assert_eq!(
+        highlight_rect(&hl_plan(), &Default::default(), "v/zzz"),
+        None
+    );
+}
+
+// --- clicking states on the map ---------------------------------------------
+
+#[test]
+fn state_at_hits_node_thumbnail_and_title_strip() {
+    use storybook_viewer::canvas::state_at;
+    let plan = hl_plan();
+    let none = Default::default();
+    assert_eq!(state_at(&plan, &none, (110.0, 60.0)).as_deref(), Some("v/a"));
+    // the title strip under the thumbnail belongs to the node too
+    assert_eq!(
+        state_at(&plan, &none, (110.0, 50.0 + NODE_H + TITLE_H / 2.0)).as_deref(),
+        Some("v/a")
+    );
+    assert_eq!(state_at(&plan, &none, (510.0, 60.0)).as_deref(), Some("v/b"));
+    assert_eq!(state_at(&plan, &none, (5.0, 5.0)), None);
+}
+
+#[test]
+fn state_at_prefers_variant_cells_of_expanded_nodes() {
+    use storybook_viewer::canvas::{state_at, variant_cells};
+    let mut plan = hl_plan();
+    plan.nodes[0].rect.h = NODE_H + 200.0;
+    let expanded: std::collections::BTreeSet<String> = ["v/a".to_string()].into();
+    let cells = variant_cells(plan.nodes[0].rect, 2);
+    let centre = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    assert_eq!(state_at(&plan, &expanded, centre(cells[0])).as_deref(), Some("v/a1"));
+    assert_eq!(state_at(&plan, &expanded, centre(cells[1])).as_deref(), Some("v/a2"));
+    // collapsed: the same point is not a variant
+    assert_ne!(
+        state_at(&plan, &Default::default(), centre(cells[1])).as_deref(),
+        Some("v/a2")
+    );
+}
+
+// --- focus mode (hover / selection dims the rest of the map) ----------------
+
+fn route(f: &str, t: &str, back: bool) -> EdgeRoute {
+    EdgeRoute {
+        from: f.into(),
+        to: t.into(),
+        back,
+        label: None,
+        points: None,
+        label_pos: None,
+        arrow: None,
+    }
+}
+
+#[test]
+fn focus_prefers_hover_then_selection_and_maps_variants_to_their_node() {
+    use storybook_viewer::canvas::focus_node;
+    let plan = hl_plan();
+    assert_eq!(focus_node(&plan, None, None), None);
+    assert_eq!(focus_node(&plan, None, Some("v/b")).as_deref(), Some("v/b"));
+    assert_eq!(focus_node(&plan, None, Some("v/a2")).as_deref(), Some("v/a"));
+    assert_eq!(focus_node(&plan, Some("v/b"), Some("v/a")).as_deref(), Some("v/b"));
+    // off-map ids never focus; a stale hover falls back to the selection
+    assert_eq!(focus_node(&plan, None, Some("v/zz")), None);
+    assert_eq!(focus_node(&plan, Some("v/zz"), Some("v/a1")).as_deref(), Some("v/a"));
+}
+
+#[test]
+fn focus_set_is_the_node_and_its_visible_neighbours() {
+    use storybook_viewer::canvas::focus_set;
+    let edges = [
+        route("a", "b", false),
+        route("c", "a", false),
+        route("b", "d", false),
+        route("e", "a", true),
+    ];
+    let set: Vec<String> = focus_set(&edges, "a", false).into_iter().collect();
+    assert_eq!(set, ["a", "b", "c"]);
+    let with_back: Vec<String> = focus_set(&edges, "a", true).into_iter().collect();
+    assert_eq!(with_back, ["a", "b", "c", "e"]);
+    let alone: Vec<String> = focus_set(&[], "a", false).into_iter().collect();
+    assert_eq!(alone, ["a"]);
+}
+
+#[test]
+fn only_edges_touching_the_focus_are_in_focus() {
+    use storybook_viewer::canvas::edge_in_focus;
+    assert!(edge_in_focus("a", "b", Some("a")));
+    assert!(edge_in_focus("a", "b", Some("b")));
+    assert!(!edge_in_focus("a", "b", Some("c")));
+    assert!(!edge_in_focus("a", "b", None));
 }

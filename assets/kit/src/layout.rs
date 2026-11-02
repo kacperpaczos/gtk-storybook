@@ -39,6 +39,7 @@ pub fn layout(
     cells: &[Cell],
     flows: &Flows,
     titles: &BTreeMap<String, String>,
+    view_titles: &BTreeMap<String, String>,
 ) -> Layout {
     let lane_of = |state: &str| -> u32 {
         cells
@@ -143,13 +144,17 @@ pub fn layout(
         })
         .collect();
 
-    let variants = variant_positions(flows, &flow, known, &depths, &lane_of, &rows);
+    let variants = variant_positions(flows, &flow, known, &depths, &lane_of, &rows, titles);
 
     Layout {
         nodes,
         variants,
         edges: merge_edges(&wires, &flow, &back_pairs, &parents),
         engine: crate::model::ENGINE_BUILTIN.to_string(),
+        view_titles: views_in_order
+            .iter()
+            .filter_map(|v| view_titles.get(v).map(|t| (v.clone(), t.clone())))
+            .collect(),
         dot_version: None,
         clusters: Vec::new(),
     }
@@ -319,6 +324,7 @@ fn variant_positions(
     depths: &BTreeMap<&str, u32>,
     lane_of: &dyn Fn(&str) -> u32,
     rows: &BTreeMap<&str, u32>,
+    titles: &BTreeMap<String, String>,
 ) -> Vec<VariantPos> {
     let mut nodes: Vec<&String> = flows.variants.keys().collect();
     nodes.sort_by_key(|node| (lane_of(node), depths[node.as_str()], rows[node.as_str()]));
@@ -338,6 +344,7 @@ fn variant_positions(
                 .into_iter()
                 .enumerate()
                 .map(move |(i, state_id)| VariantPos {
+                    title: titles.get(&state_id).cloned(),
                     state_id,
                     variant_of: node.clone(),
                     lane: lane_of(node),

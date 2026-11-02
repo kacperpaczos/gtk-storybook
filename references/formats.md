@@ -30,6 +30,9 @@ template = "app/ui/skill_detail.ui"            # optional .ui / .blp
 ## states/<view>.toml
 ```toml
 view = "skill_detail"
+title = "Szczegóły skilla"           # optional display name (sidebar,
+                                     # cluster and lane labels); without
+                                     # it the id is humanized
 budget = 64
 
 [classes]
@@ -54,8 +57,14 @@ reason = "single-line ellipsized label"
 # state id -> human title; the viewer labels nodes with it (falls back to
 # the state id) and `sbk check titles` gates coverage (verify is strict).
 "skill_detail/dirty-empty" = "Edycja niezapisanych zmian"
+
+[labels]
+# optional story-menu names: "<axis>" names a data dimension,
+# "<axis>.<class>" one of its values (fallback: humanized ids)
+"scopes" = "Zasięg"
+"scopes.many" = "globalny + projekt"
 ```
-State ids: `<view>/<class>-<class>-…` in axis order (from `sbk expand`); a story may add a human `title` in `[titles]`.
+State ids: `<view>/<class>-<class>-…` in axis order (from `sbk expand`); a story may add a human `title` in `[titles]` — nodes *and* data variants (the sidebar rows and the expanded variant grid show it).
 
 ## flows.toml
 ```toml
@@ -123,10 +132,18 @@ top-left based):
 - per edge `points` — the spline as a cubic Bezier chain (start point,
   then whole triples c1/c2/end; one `cubic_to` per triple), `label_pos` —
   the label pill centre, and `arrow` — the filled arrowhead polygon;
-- `clusters` — one per view: `view`, `label` (the view id shown on top of
-  the frame) and `rect`.
+- `clusters` — one per view: `view`, `label` (the view display name from
+  `view_titles`, else the view id, shown on top of the frame) and `rect`.
+
+Both engines also write:
+
+- `view_titles` — view id -> authored display name
+  (`states/<view>.toml` top-level `title`); consumers fall back to
+  humanizing the view id (`skill_detail` → "Skill detail");
+- per variant `title` — the variant's `[titles]` entry, else `None`
+  (consumers fall back to the classes part of the state id).
 
 The same input yields a byte-identical file in either engine. The viewer
 draws dot layouts from the stored geometry (nodes at their rects, edges as
-the stored chains, cluster frames with the view name); the builtin engine
-draws exactly as before.
+the stored chains, cluster frames with the view display name); the builtin
+engine draws exactly as before.

@@ -11,6 +11,7 @@ pub mod anim;
 pub mod app;
 pub mod canvas;
 pub mod hosting;
+pub mod sidebar;
 pub mod signature;
 pub mod story_list;
 

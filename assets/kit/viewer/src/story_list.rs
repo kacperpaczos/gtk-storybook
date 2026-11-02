@@ -1,9 +1,11 @@
 //! Story list (references/canvas.md): an `AdwNavigationSplitView` whose
-//! sidebar groups states by view, and whose content shows the live story
-//! inside an `AdwBreakpointBin` at the chosen width preset (exact width via
-//! a `GtkConstraintGuide` with min = max) plus an Events pane.
+//! sidebar is an `AdwNavigationView` drill-down (views -> states,
+//! GNOME HIG "browsing": back button, optional search), and whose content
+//! shows the live story inside an `AdwBreakpointBin` at the chosen width
+//! preset (exact width via a `GtkConstraintGuide` with min = max) plus an
+//! Events pane.
 
-use gtk::prelude::*;
+use adw::prelude::*;
 
 /// Width presets (px) the story can be shown at.
 pub const WIDTH_PRESETS: [i32; 4] = [360, 600, 900, 1200];
@@ -83,58 +85,137 @@ pub(crate) fn preset_width_container(child: &impl IsA<gtk::Widget>, width: i32) 
 
 /// Widgets of the story-list page; the application wires behavior.
 pub(crate) struct StoryListView {
-    pub split: adw::NavigationSplitView,
-    pub sidebar: gtk::ListBox,
+    /// Left column: the drill-down menu (nav pages carry their header bars).
+    pub sidebar: adw::ToolbarView,
+    /// Right column: live preview of the selected state + Events pane.
+    pub preview: adw::ToolbarView,
+    /// Sidebar drill-down: level 1 "Views", one level-2 page per view,
+    /// plus the flat search-results page.
+    pub nav: adw::NavigationView,
+    /// Drill-down pages (crate::sidebar::pages): spec, page widget and row
+    /// list share one index; page 0 is the root "Widoki".
+    pub specs: Vec<crate::sidebar::PageSpec>,
+    pub pages: Vec<adw::NavigationPage>,
+    pub lists: Vec<gtk::ListBox>,
+    pub search_page: adw::NavigationPage,
+    pub search_list: gtk::ListBox,
+    pub search_entry: gtk::SearchEntry,
     pub content_slot: gtk::Box,
     pub events: gtk::ListBox,
     pub width_choice: gtk::DropDown,
     pub theme_choice: gtk::DropDown,
-    pub map_button: gtk::Button,
+    /// Hides the preview column.
+    pub preview_close: gtk::Button,
 }
 
-/// Build the story list: sidebar rows are the states (grouped by view, in
-/// the given order), content slot hosts the live story, Events pane is fed
-/// by the application from [`crate::Events`].
-#[mutants::skip] // widget construction; manual GUI check deferred to user
-pub(crate) fn build(state_ids: &[String]) -> StoryListView {
-    // --- sidebar: states grouped by view -----------------------------------
-    let sidebar = gtk::ListBox::new();
-    sidebar.set_css_classes(&["navigation-sidebar"]);
-    for state_id in state_ids {
+/// The row list of one drill-down page: a row per spec row; rows that
+/// lead to a further page carry `go-next-symbolic` and are not selectable,
+/// leaf rows select a state (state id in the tooltip, never as text).
+fn page_list(spec: &crate::sidebar::PageSpec) -> gtk::ListBox {
+    let list = gtk::ListBox::new();
+    list.set_css_classes(&["navigation-sidebar"]);
+    for row_spec in &spec.rows {
         let row = adw::ActionRow::builder()
-            .title(story_title(state_id))
-            .subtitle(state_id)
+            .title(&row_spec.title)
             .activatable(true)
             .build();
-        sidebar.append(&row);
+        if let Some(subtitle) = &row_spec.subtitle {
+            row.set_subtitle(subtitle);
+        }
+        match &row_spec.target {
+            crate::sidebar::Target::Page(_) => {
+                row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+                row.set_selectable(false);
+            }
+            crate::sidebar::Target::State(state_id) => {
+                row.set_tooltip_text(Some(state_id));
+            }
+        }
+        list.append(&row);
     }
-    // Group headers: a view label above its first state.
-    {
-        let ids = state_ids.to_vec();
-        sidebar.set_header_func(
-            move |row: &gtk::ListBoxRow, before: Option<&gtk::ListBoxRow>| {
-                let view_of_row =
-                    |r: &gtk::ListBoxRow| ids.get(r.index() as usize).map(|id| view_of(id));
-                let new_group = match before {
-                    None => true,
-                    Some(prev) => view_of_row(prev).as_deref() != view_of_row(row).as_deref(),
-                };
-                if new_group {
-                    let header = gtk::Label::new(view_of_row(row).as_deref());
-                    header.set_halign(gtk::Align::Start);
-                    row.set_header(Some(&header));
-                } else {
-                    row.set_header(None::<&gtk::Label>);
-                }
-            },
-        );
+    list
+}
+
+/// A non-root drill-down page: header bar (back button) over the list.
+fn sub_page(spec: &crate::sidebar::PageSpec, list: &gtk::ListBox) -> adw::NavigationPage {
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_child(Some(list));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+    toolbar.set_content(Some(&scroll));
+    adw::NavigationPage::builder()
+        .title(&spec.title)
+        .child(&toolbar)
+        .build()
+}
+
+/// Build the story list: sidebar drill-down from the pure sidebar model
+/// ([`crate::sidebar`]), content slot hosts the live story, Events pane is
+/// fed by the application from [`crate::Events`].
+#[mutants::skip] // widget construction; manual GUI check deferred to user
+pub(crate) fn build(specs: &[crate::sidebar::PageSpec]) -> StoryListView {
+    // --- sidebar: drill-down pages (root = views) ----------------------------
+    let lists: Vec<gtk::ListBox> = specs.iter().map(page_list).collect();
+    let views_list = lists[0].clone();
+    let views_scroll = gtk::ScrolledWindow::new();
+    views_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    views_scroll.set_child(Some(&views_list));
+
+    let search_entry = gtk::SearchEntry::new();
+    search_entry.set_placeholder_text(Some("Szukaj stanów"));
+    search_entry.set_hexpand(true);
+    let search_bar = gtk::SearchBar::builder().child(&search_entry).build();
+    let search_button = gtk::ToggleButton::new();
+    search_button.set_icon_name("system-search-symbolic");
+    search_button.set_tooltip_text(Some("Szukaj (Ctrl+F)"));
+    search_bar.connect_entry(&search_entry);
+
+    let header = adw::HeaderBar::new();
+    header.pack_end(&search_button);
+    search_button
+        .bind_property("active", &search_bar, "search-mode-enabled")
+        .sync_create()
+        .bidirectional()
+        .build();
+    let views_toolbar = adw::ToolbarView::new();
+    views_toolbar.add_top_bar(&header);
+    views_toolbar.add_top_bar(&search_bar);
+    views_toolbar.set_content(Some(&views_scroll));
+    let views_page = adw::NavigationPage::builder()
+        .title("Widoki")
+        .child(&views_toolbar)
+        .build();
+
+    // --- sidebar: search results (flat, while the query is non-empty) -----
+    let search_list = gtk::ListBox::new();
+    search_list.set_css_classes(&["navigation-sidebar"]);
+    let search_scroll = gtk::ScrolledWindow::new();
+    search_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    search_scroll.set_child(Some(&search_list));
+    let search_toolbar = adw::ToolbarView::new();
+    search_toolbar.add_top_bar(&adw::HeaderBar::new());
+    search_toolbar.set_content(Some(&search_scroll));
+    let search_page = adw::NavigationPage::builder()
+        .title("Wyniki")
+        .child(&search_toolbar)
+        .build();
+
+    let nav = adw::NavigationView::new();
+    let mut pages = vec![views_page];
+    for (spec, list) in specs.iter().zip(&lists).skip(1) {
+        pages.push(sub_page(spec, list));
     }
-    let sidebar_scroll = gtk::ScrolledWindow::new();
-    sidebar_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    sidebar_scroll.set_child(Some(&sidebar));
+    for page in &pages {
+        nav.add(page);
+    }
+    nav.add(&search_page);
+    // Ctrl+F / typing finds the search entry while the sidebar has focus.
+    search_bar.set_key_capture_widget(Some(&views_toolbar));
+
+    // The nav pages carry their own header bars; no extra outer bar.
     let sidebar_view = adw::ToolbarView::new();
-    sidebar_view.add_top_bar(&adw::HeaderBar::new());
-    sidebar_view.set_content(Some(&sidebar_scroll));
+    sidebar_view.set_content(Some(&nav));
 
     // --- content: live story at a preset width + events pane ---------------
     let content_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -160,7 +241,8 @@ pub(crate) fn build(state_ids: &[String]) -> StoryListView {
     content_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     content_scroll.set_child(Some(&content_column));
 
-    let map_button = gtk::Button::with_label("Flow map");
+    let preview_close = gtk::Button::from_icon_name("window-close-symbolic");
+    preview_close.set_tooltip_text(Some("Ukryj podgląd"));
     let width_labels: Vec<String> = WIDTH_PRESETS.iter().map(|w| format!("{w} px")).collect();
     let width_strs: Vec<&str> = width_labels.iter().map(String::as_str).collect();
     let width_choice = gtk::DropDown::from_strings(&width_strs);
@@ -171,34 +253,31 @@ pub(crate) fn build(state_ids: &[String]) -> StoryListView {
     width_choice.set_selected(0);
 
     let content_bar = adw::HeaderBar::new();
-    content_bar.pack_start(&map_button);
-    content_bar.pack_end(&theme_choice);
-    content_bar.pack_end(&width_choice);
+    // window controls live on the map's bar; this one only closes the column
+    content_bar.set_show_start_title_buttons(false);
+    content_bar.set_show_end_title_buttons(false);
+    content_bar.set_title_widget(Some(&gtk::Label::new(Some("Podgląd"))));
+    content_bar.pack_start(&width_choice);
+    content_bar.pack_start(&theme_choice);
+    content_bar.pack_end(&preview_close);
     let content_view = adw::ToolbarView::new();
     content_view.add_top_bar(&content_bar);
     content_view.set_content(Some(&content_scroll));
 
-    // --- split view ----------------------------------------------------------
-    let sidebar_page = adw::NavigationPage::builder()
-        .title("Views")
-        .child(&sidebar_view)
-        .build();
-    let content_page = adw::NavigationPage::builder()
-        .title("Preview")
-        .child(&content_view)
-        .build();
-    let split = adw::NavigationSplitView::new();
-    split.set_sidebar(Some(&sidebar_page));
-    split.set_content(Some(&content_page));
-    split.set_show_content(false);
-
     StoryListView {
-        split,
-        sidebar,
+        sidebar: sidebar_view,
+        preview: content_view,
+        nav,
+        specs: specs.to_vec(),
+        pages,
+        lists,
+        search_page,
+        search_list,
+        search_entry,
         content_slot,
         events,
         width_choice,
         theme_choice,
-        map_button,
+        preview_close,
     }
 }

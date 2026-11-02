@@ -479,7 +479,13 @@ fn cmd_verify(workspace: &Path, storybook: &Path, json: bool) -> bool {
     };
     match chain {
         Ok(chain) => {
-            let builtin = layout::layout(&chain.views, &chain.cells, &chain.flows, &chain.titles);
+            let builtin = layout::layout(
+                &chain.views,
+                &chain.cells,
+                &chain.flows,
+                &chain.titles,
+                &chain.view_titles,
+            );
             let (placed, warning) = match dot::dot_program() {
                 Some(program) => match dot::layout_with_dot(
                     &program,
@@ -487,6 +493,7 @@ fn cmd_verify(workspace: &Path, storybook: &Path, json: bool) -> bool {
                     &chain.cells,
                     &chain.flows,
                     &chain.titles,
+                    &chain.view_titles,
                 ) {
                     Ok(placed) => (placed, None),
                     Err(err) => (
@@ -575,6 +582,11 @@ fn verify_chain(storybook: &Path, report: &scan::ScanReport) -> Result<Chain, Ve
         .flat_map(|file| file.titles.iter().map(|(k, v)| (k.clone(), v.clone())))
         .collect();
     problems.extend(check::check_titles(&cells, &titles).problems);
+    // authored view display names (`states/<view>.toml` `title`)
+    let view_titles: BTreeMap<String, String> = states
+        .values()
+        .filter_map(|file| file.title.as_ref().map(|t| (file.view.clone(), t.clone())))
+        .collect();
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -583,6 +595,7 @@ fn verify_chain(storybook: &Path, report: &scan::ScanReport) -> Result<Chain, Ve
         cells,
         flows: flows.flows,
         titles,
+        view_titles,
     })
 }
 
@@ -591,6 +604,7 @@ struct Chain {
     cells: Vec<Cell>,
     flows: Flows,
     titles: BTreeMap<String, String>,
+    view_titles: BTreeMap<String, String>,
 }
 
 fn cmd_scaffold(storybook: &Path, templates: PathBuf, json: bool) -> bool {

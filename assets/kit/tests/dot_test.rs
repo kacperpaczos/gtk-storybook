@@ -8,7 +8,6 @@ use common::kit_dir;
 use std::collections::BTreeMap;
 use std::fs;
 use storybook_kit::dot;
-use storybook_kit::layout::layout;
 use storybook_kit::model::{Cell, Edge, Flows, Terminal, TerminalKind};
 
 fn cell(view: &str, state: &str) -> Cell {
@@ -52,6 +51,16 @@ fn sample() -> (Vec<String>, Vec<Cell>, Flows, BTreeMap<String, String>) {
         "Start \"q\" \\ done".to_string(), // quotes and a backslash
     );
     (views, cells, flows, titles)
+}
+
+/// Four-arg shim: every older test passes no view titles.
+fn layout(
+    views: &[String],
+    cells: &[Cell],
+    flows: &Flows,
+    titles: &BTreeMap<String, String>,
+) -> storybook_kit::model::Layout {
+    storybook_kit::layout::layout(views, cells, flows, titles, &BTreeMap::new())
 }
 
 #[test]
@@ -160,9 +169,9 @@ fn layout_with_dot_is_deterministic_and_attaches_geometry() {
         return;
     };
     let (views, cells, flows, titles) = sample();
-    let first = dot::layout_with_dot(&program, &views, &cells, &flows, &titles)
+    let first = dot::layout_with_dot(&program, &views, &cells, &flows, &titles, &BTreeMap::new())
         .expect("dot layout succeeds");
-    let second = dot::layout_with_dot(&program, &views, &cells, &flows, &titles)
+    let second = dot::layout_with_dot(&program, &views, &cells, &flows, &titles, &BTreeMap::new())
         .expect("dot layout succeeds");
 
     assert_eq!(
@@ -187,7 +196,14 @@ fn layout_with_dot_fails_gracefully_on_a_broken_program() {
     // A program that exists but is not dot: the pipeline reports, the
     // caller (sbk verify) falls back to the builtin engine.
     let (views, cells, flows, titles) = sample();
-    let broken = dot::layout_with_dot("/bin/false".as_ref(), &views, &cells, &flows, &titles);
+    let broken = dot::layout_with_dot(
+        "/bin/false".as_ref(),
+        &views,
+        &cells,
+        &flows,
+        &titles,
+        &BTreeMap::new(),
+    );
     assert!(broken.is_err());
     let missing = dot::layout_with_dot(
         "/nonexistent/dot-for-sbk-test".as_ref(),
@@ -195,6 +211,7 @@ fn layout_with_dot_fails_gracefully_on_a_broken_program() {
         &cells,
         &flows,
         &titles,
+        &BTreeMap::new(),
     );
     assert!(missing.is_err());
 }
@@ -261,7 +278,7 @@ fn relayout_with_dot_moves_neighbours_away_from_an_expanded_node() {
         return;
     };
     let (views, cells, flows, titles) = sample();
-    let base = dot::layout_with_dot(&program, &views, &cells, &flows, &titles)
+    let base = dot::layout_with_dot(&program, &views, &cells, &flows, &titles, &BTreeMap::new())
         .expect("dot layout succeeds");
     let mut sizes = BTreeMap::new();
     sizes.insert("a/s1".to_string(), dot::expanded_size(2));
@@ -318,4 +335,37 @@ fn relayout_with_dot_moves_neighbours_away_from_an_expanded_node() {
             assert!(disjoint, "clusters overlap: {a:?} vs {b:?}");
         }
     }
+}
+
+#[test]
+fn cluster_labels_use_view_display_names() {
+    let (views, cells, flows, titles) = sample();
+    let view_titles = BTreeMap::from([("a".to_string(), "Widok A".to_string())]);
+    let placed = storybook_kit::layout::layout(&views, &cells, &flows, &titles, &view_titles);
+    let src = dot::build_dot(&views, &placed);
+    assert!(
+        src.contains("subgraph \"cluster_a\" {\nlabel=\"Widok A\";\n"),
+        "{src}"
+    );
+    // a view without a display name keeps its id
+    assert!(
+        src.contains("subgraph \"cluster_b\" {\nlabel=\"b\";\n"),
+        "{src}"
+    );
+}
+
+#[test]
+fn layout_with_dot_labels_clusters_with_display_names() {
+    let Some(program) = dot::dot_program() else {
+        eprintln!("skipping: dot not on PATH");
+        return;
+    };
+    let (views, cells, flows, titles) = sample();
+    let view_titles = BTreeMap::from([("a".to_string(), "Widok A".to_string())]);
+    let placed = dot::layout_with_dot(&program, &views, &cells, &flows, &titles, &view_titles)
+        .expect("dot layout succeeds");
+    let a = placed.clusters.iter().find(|c| c.view == "a").unwrap();
+    assert_eq!(a.label, "Widok A");
+    let b = placed.clusters.iter().find(|c| c.view == "b").unwrap();
+    assert_eq!(b.label, "b");
 }

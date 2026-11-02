@@ -43,14 +43,19 @@ pub const ARROW_HALF_WIDTH: f64 = 5.0;
 pub const MIN_SCALE: f64 = 0.05;
 pub const MAX_SCALE: f64 = 8.0;
 pub const FIT_PADDING: f64 = 24.0;
-/// One Ctrl+scroll notch multiplies the scale by this.
+/// One wheel notch multiplies the scale by this.
 pub const ZOOM_STEP: f64 = 1.1;
 /// Minimal back-edge arc drop below the lane.
 pub const BACK_DROP_MIN: f64 = 56.0;
 /// Space under a node for its title and the \"+N variants\" badge.
 pub const TITLE_H: f64 = 22.0;
-/// Width of the "+N variants" pill in a node's top-right corner.
-pub const BADGE_W: f64 = 96.0;
+/// Corner radius of node cards and view backgrounds.
+pub const CARD_RADIUS: f64 = 8.0;
+/// Opacity of everything outside the focus (hovered / selected node and
+/// its neighbours).
+pub const DIM_OPACITY: f64 = 0.3;
+/// Width of the "+N" variant chip in a node's top-right corner.
+pub const BADGE_W: f64 = 40.0;
 /// Edge labels longer than this are ellipsized.
 pub const LABEL_MAX_W: f64 = 180.0;
 /// Inner padding of label pills (edge labels, titles, badges).
@@ -181,16 +186,15 @@ pub fn initial_view(root: Rect, viewport: (f64, f64)) -> ViewTransform {
     }
 }
 
-/// Ctrl+scroll decision: the zoom factor for one wheel notch, or `None`
-/// when the event must pass on (no Ctrl held). A wheel notch up (`dy < 0`)
-/// zooms in.
-pub fn scroll_zoom(ctrl: bool, dy: f64) -> Option<f64> {
-    if !ctrl {
+/// Scroll decision: the zoom factor for a vertical scroll of `dy` (no
+/// modifier needed), or `None` when there is no vertical motion. Scrolling
+/// up (`dy < 0`) zooms in; one wheel notch is one [`ZOOM_STEP`], smooth
+/// touchpad deltas scale proportionally (clamped to three notches).
+pub fn scroll_zoom(dy: f64) -> Option<f64> {
+    if dy == 0.0 {
         None
-    } else if dy < 0.0 {
-        Some(ZOOM_STEP)
     } else {
-        Some(1.0 / ZOOM_STEP)
+        Some(ZOOM_STEP.powf(-dy.clamp(-3.0, 3.0)))
     }
 }
 
@@ -239,6 +243,9 @@ pub struct NodeGeometry {
 pub struct VariantGeometry {
     pub state_id: String,
     pub variant_of: String,
+    /// Authored variant title; the draw code falls back to the classes
+    /// part of the state id.
+    pub title: Option<String>,
     pub rect: Rect,
 }
 
@@ -333,6 +340,7 @@ pub fn plan_dot(
         stack.push(VariantGeometry {
             state_id: v.state_id.clone(),
             variant_of: v.variant_of.clone(),
+            title: v.title.clone(),
             rect: Rect {
                 x: r.x,
                 y,
@@ -519,6 +527,7 @@ pub fn plan_with_edges(
             rect_of(&v.variant_of).map(|node_rect| VariantGeometry {
                 state_id: v.state_id.clone(),
                 variant_of: v.variant_of.clone(),
+                title: v.title.clone(),
                 rect: Rect {
                     x: node_rect.x,
                     y: node_rect.max_y() + TITLE_H + v.order as f64 * (VARIANT_H + VGAP),
@@ -746,6 +755,45 @@ pub fn node_at(nodes: &[NodeGeometry], logical: (f64, f64)) -> Option<&NodeGeome
     nodes.iter().rev().find(|n| n.rect.contains(logical))
 }
 
+/// State under a logical point: a variant cell of an expanded node wins
+/// (the grown node rect also covers its grid), else the node itself
+/// (thumbnail, title strip). `None` over empty canvas.
+pub fn state_at(
+    plan: &CanvasPlan,
+    expanded: &BTreeSet<String>,
+    logical: (f64, f64),
+) -> Option<String> {
+    for node in plan.nodes.iter().rev() {
+        if !expanded.contains(&node.state_id) {
+            continue;
+        }
+        let variants = plan
+            .variants
+            .iter()
+            .filter(|v| v.variant_of == node.state_id);
+        for (cell, variant) in variant_cells(node.rect, node.variant_count)
+            .iter()
+            .zip(variants)
+        {
+            if cell.contains(logical) {
+                return Some(variant.state_id.clone());
+            }
+        }
+    }
+    plan.nodes
+        .iter()
+        .rev()
+        .find(|n| {
+            let r = n.rect;
+            let card = Rect {
+                h: r.h.max(r.h.min(NODE_H) + TITLE_H),
+                ..r
+            };
+            card.contains(logical)
+        })
+        .map(|n| n.state_id.clone())
+}
+
 /// Badge rect under a node that has data variants (`"+N variants"`),
 /// directly under the node frame; `None` when there is nothing to badge.
 pub fn badge_rect(node: &NodeGeometry) -> Option<Rect> {
@@ -769,6 +817,43 @@ pub fn title_rect(node: Rect) -> Rect {
     }
 }
 
+/// Where the selection highlight goes for `selected` (synced from the
+/// story list): a flow node -> its thumbnail + title strip; a variant of an
+/// expanded node -> its grid cell; a variant of a collapsed node -> the
+/// node. `None` when the state is not on the map.
+pub fn highlight_rect(
+    plan: &CanvasPlan,
+    expanded: &BTreeSet<String>,
+    selected: &str,
+) -> Option<Rect> {
+    let node_box = |n: &NodeGeometry| Rect {
+        x: n.rect.x,
+        y: n.rect.y,
+        w: n.rect.w,
+        h: n.rect.h.min(NODE_H) + TITLE_H,
+    };
+    if let Some(n) = plan.nodes.iter().find(|n| n.state_id == selected) {
+        return Some(node_box(n));
+    }
+    let variant = plan.variants.iter().find(|v| v.state_id == selected)?;
+    let node = plan
+        .nodes
+        .iter()
+        .find(|n| n.state_id == variant.variant_of)?;
+    if !expanded.contains(&node.state_id) {
+        return Some(node_box(node));
+    }
+    let index = plan
+        .variants
+        .iter()
+        .filter(|v| v.variant_of == node.state_id)
+        .position(|v| v.state_id == selected)?;
+    variant_cells(node.rect, node.variant_count)
+        .get(index)
+        .copied()
+        .or(Some(node_box(node)))
+}
+
 /// Opaque card colour for pills and expanded variant cards, matching the
 /// theme implied by the foreground colour.
 fn card_color(fg: &gdk::RGBA) -> gdk::RGBA {
@@ -779,17 +864,31 @@ fn card_color(fg: &gdk::RGBA) -> gdk::RGBA {
     }
 }
 
-/// Rounded opaque pill with a thin border.
+/// Rounded opaque pill, no border.
 #[mutants::skip] // drawing glue
-fn pill(snapshot: &gtk::Snapshot, fill: &gdk::RGBA, border: &gdk::RGBA, r: Rect) {
-    let rr = gsk::RoundedRect::from_rect(
-        graphene::Rect::new(r.x as f32, r.y as f32, r.w as f32, r.h as f32),
-        (r.h / 2.0) as f32,
-    );
+fn pill(snapshot: &gtk::Snapshot, fill: &gdk::RGBA, r: Rect) {
+    let rr = rounded(r, r.h / 2.0);
     snapshot.push_rounded_clip(&rr);
     snapshot.append_color(fill, rr.bounds());
     snapshot.pop();
-    snapshot.append_border(&rr, &[1.0; 4], &[*border; 4]);
+}
+
+/// `r` as a GSK rounded rect with corner `radius`.
+fn rounded(r: Rect, radius: f64) -> gsk::RoundedRect {
+    gsk::RoundedRect::from_rect(
+        graphene::Rect::new(r.x as f32, r.y as f32, r.w as f32, r.h as f32),
+        radius as f32,
+    )
+}
+
+/// Card under a node: soft shadow + opaque rounded fill, no outline.
+#[mutants::skip] // drawing glue
+fn node_card(snapshot: &gtk::Snapshot, fill: &gdk::RGBA, shadow: &gdk::RGBA, r: Rect) {
+    let rr = rounded(r, CARD_RADIUS);
+    snapshot.append_outset_shadow(&rr, shadow, 0.0, 1.0, 0.0, 6.0);
+    snapshot.push_rounded_clip(&rr);
+    snapshot.append_color(fill, rr.bounds());
+    snapshot.pop();
 }
 
 /// Point on the cubic Bezier of `g` at parameter `t` in 0..=1.
@@ -837,9 +936,10 @@ pub fn place_labels(edges: &[(EdgeGeometry, (f64, f64))], obstacles: &[Rect]) ->
     placed
 }
 
-/// Badge text for a variant count (plain English by design, formats.md).
+/// Badge text for a variant count: a compact chip, the tooltip-free
+/// `+N` (the menu names the variants).
 pub fn badge_label(count: u32) -> String {
-    format!("+{count} variants")
+    format!("+{count}")
 }
 
 /// Node whose variant badge sits under a logical point; later nodes win.
@@ -854,6 +954,46 @@ pub fn badge_at(nodes: &[NodeGeometry], logical: (f64, f64)) -> Option<&NodeGeom
 /// hidden by default (canvas.md).
 pub fn edge_visible(back: bool, show_back: bool) -> bool {
     show_back || !back
+}
+
+/// Flow node the map focuses on: the hovered node wins, else the node of
+/// the selected state (a variant focuses its node). `None` when neither
+/// is on the map — then nothing is dimmed and no edge label is shown.
+pub fn focus_node(plan: &CanvasPlan, hovered: Option<&str>, selected: Option<&str>) -> Option<String> {
+    let on_map = |id: &str| plan.nodes.iter().any(|n| n.state_id == id);
+    if let Some(h) = hovered.filter(|h| on_map(h)) {
+        return Some(h.to_string());
+    }
+    let selected = selected?;
+    if on_map(selected) {
+        return Some(selected.to_string());
+    }
+    plan.variants
+        .iter()
+        .find(|v| v.state_id == selected)
+        .map(|v| v.variant_of.clone())
+        .filter(|n| on_map(n))
+}
+
+/// The focused node and its direct neighbours over the visible edges
+/// (either direction); these stay at full strength, the rest is dimmed.
+pub fn focus_set(edges: &[EdgeRoute], focus: &str, show_back: bool) -> BTreeSet<String> {
+    let mut set = BTreeSet::from([focus.to_string()]);
+    for e in edges.iter().filter(|e| edge_visible(e.back, show_back)) {
+        if e.from == focus {
+            set.insert(e.to.clone());
+        }
+        if e.to == focus {
+            set.insert(e.from.clone());
+        }
+    }
+    set
+}
+
+/// Does an edge touch the focused node? Only such edges show their action
+/// label and stay at full strength; without focus no label is shown.
+pub fn edge_in_focus(from: &str, to: &str, focus: Option<&str>) -> bool {
+    focus.is_some_and(|f| f == from || f == to)
 }
 
 // ---------------------------------------------------------------------------
@@ -900,6 +1040,11 @@ mod imp {
         pub anim_target_edges: RefCell<Vec<EdgeRoute>>,
         pub anim_start: Cell<Option<std::time::Instant>>,
         pub anim_ticking: Cell<bool>,
+        /// State selected in the story list, highlighted when on the map.
+        pub selected: RefCell<Option<String>>,
+        /// Flow node under the pointer (variants map to their node); it
+        /// takes the focus from the selection while hovered.
+        pub hovered: RefCell<Option<String>>,
     }
 
     impl Default for Canvas {
@@ -921,6 +1066,8 @@ mod imp {
                 anim_target_edges: RefCell::default(),
                 anim_start: Cell::new(None),
                 anim_ticking: Cell::new(false),
+                selected: RefCell::default(),
+                hovered: RefCell::default(),
             }
         }
     }
@@ -998,6 +1145,14 @@ impl Canvas {
 
     /// Header toggle \"Back edges\": back edges draw only while it is on.
     #[mutants::skip] // flag flip + redraw; the filter is the tested edge_visible
+    /// Highlight `state_id` (selected in the story list) when it is on the
+    /// map; `None` clears the highlight.
+    #[mutants::skip] // state handoff + redraw; geometry is highlight_rect
+    pub fn set_selected(&self, state_id: Option<&str>) {
+        *self.imp().selected.borrow_mut() = state_id.map(str::to_string);
+        self.queue_draw();
+    }
+
     pub fn set_show_back_edges(&self, show: bool) {
         self.imp().show_back.set(show);
         self.queue_draw();
@@ -1133,30 +1288,8 @@ impl Canvas {
     /// (`initial_view`); fit-all only when no root node exists.
     #[mutants::skip] // delegates to the tested initial_view/fit_transform
     fn initial_show(&self) {
-        let imp = self.imp();
-        let (w, h) = imp.viewport.get();
-        let viewport = (w as f64, h as f64);
-        let show_back = imp.show_back.get();
-        let transform = {
-            let content = imp.content.borrow();
-            content
-                .plan
-                .nodes
-                .iter()
-                .find(|n| Some(&n.state_id) == content.root.as_ref())
-                .map(|n| initial_view(n.rect, viewport))
-                .unwrap_or_else(|| {
-                    fit_transform(
-                        content_bounds(
-                            &content.plan.nodes,
-                            &Self::visible_edges(&content, show_back),
-                        ),
-                        viewport,
-                    )
-                })
-        };
-        *imp.transform.borrow_mut() = transform;
-        self.queue_draw();
+        // The map always opens fitted: the whole journey in view.
+        self.fit();
     }
     #[mutants::skip] // delegates to the tested zoom_at; GUI-only
     fn zoom_around(&self, px: f64, py: f64, factor: f64) {
@@ -1205,6 +1338,34 @@ impl Canvas {
             self,
             move |_, x, y| {
                 canvas.imp().pointer.set((x, y));
+                // clickable things (states, badges) show the pointer cursor
+                let (over, hovered) = {
+                    let imp = canvas.imp();
+                    let logical = imp.transform.borrow().screen_to_logical(x, y);
+                    let content = imp.content.borrow();
+                    let state = state_at(&content.plan, &imp.expanded.borrow(), logical);
+                    let hovered = state
+                        .as_deref()
+                        .and_then(|s| focus_node(&content.plan, None, Some(s)));
+                    (
+                        badge_at(&content.plan.nodes, logical).is_some() || state.is_some(),
+                        hovered,
+                    )
+                };
+                canvas.set_cursor_from_name(Some(if over { "pointer" } else { "default" }));
+                if *canvas.imp().hovered.borrow() != hovered {
+                    canvas.imp().hovered.replace(hovered);
+                    canvas.queue_draw();
+                }
+            }
+        ));
+        motion.connect_leave(clone!(
+            #[weak(rename_to = canvas)]
+            self,
+            move |_| {
+                if canvas.imp().hovered.replace(None).is_some() {
+                    canvas.queue_draw();
+                }
             }
         ));
         self.add_controller(motion);
@@ -1215,11 +1376,8 @@ impl Canvas {
             self,
             #[upgrade_or]
             glib::Propagation::Proceed,
-            move |ctrl, _dx, dy| {
-                let ctrl_held = ctrl
-                    .current_event_state()
-                    .contains(gdk::ModifierType::CONTROL_MASK);
-                match scroll_zoom(ctrl_held, dy) {
+            move |_, _dx, dy| {
+                match scroll_zoom(dy) {
                     Some(factor) => {
                         let (px, py) = canvas.imp().pointer.get();
                         canvas.zoom_around(px, py, factor);
@@ -1282,25 +1440,23 @@ impl Canvas {
             move |_, n_press, x, y| {
                 let imp = canvas.imp();
                 let t = *imp.transform.borrow();
-                if n_press == 1 {
-                    // Single click on a "+N variants" pill expands/collapses it.
-                    let badge = {
-                        let content = imp.content.borrow();
-                        badge_at(&content.plan.nodes, t.screen_to_logical(x, y))
-                            .map(|n| n.state_id.clone())
-                    };
-                    if let Some(state_id) = badge {
+                let logical = t.screen_to_logical(x, y);
+                // A "+N variants" pill expands/collapses its node.
+                let badge = {
+                    let content = imp.content.borrow();
+                    badge_at(&content.plan.nodes, logical).map(|n| n.state_id.clone())
+                };
+                if let Some(state_id) = badge {
+                    if n_press == 1 {
                         canvas.toggle_variants(&state_id);
                     }
                     return;
                 }
-                if n_press != 2 {
-                    return;
-                }
+                // Any other click on a state (node or expanded variant cell)
+                // selects it: the menu walks to it, the preview shows it.
                 let hit = {
                     let content = imp.content.borrow();
-                    node_at(&content.plan.nodes, t.screen_to_logical(x, y))
-                        .map(|n| n.state_id.clone())
+                    state_at(&content.plan, &imp.expanded.borrow(), logical)
                 };
                 if let Some(state_id) = hit
                     && let Some(open) = imp.open_story.borrow().clone()
@@ -1324,14 +1480,31 @@ impl Canvas {
             return;
         }
         let fg = self.color();
-        let line = gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.8);
-        let dim = gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.55);
+        let alpha = |a: f64| gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a as f32);
+        let line = alpha(0.45);
+        let dim = alpha(0.6);
+        let faint = alpha(0.12);
+        let accent = gdk::RGBA::new(0.21, 0.52, 0.89, 1.0);
+        let shadow = gdk::RGBA::new(0.0, 0.0, 0.0, 0.25);
+        let show_back = imp.show_back.get();
+        // Focus: hovered node, else the selected state's node. Its edges
+        // turn accent and show their labels; non-neighbours are dimmed.
+        let focus = focus_node(
+            &content.plan,
+            imp.hovered.borrow().as_deref(),
+            imp.selected.borrow().as_deref(),
+        );
+        let near = focus
+            .as_deref()
+            .map(|f| focus_set(&content.edges, f, show_back));
+        let dimmed = |id: &str| near.as_ref().is_some_and(|n| !n.contains(id));
 
         snapshot.save();
         snapshot.translate(&graphene::Point::new(t.offset_x as f32, t.offset_y as f32));
         snapshot.scale(t.scale as f32, t.scale as f32);
 
         let card = card_color(&fg);
+        let card_fill = card;
         // Everything an edge label must not cover: headers, nodes, titles.
         let mut obstacles: Vec<Rect> = Vec::new();
         // Lane headers: one per view segment, above its first node.
@@ -1355,28 +1528,17 @@ impl Canvas {
             snapshot.restore();
         }
 
-        // Dot layouts: one subtle rounded frame per view, view name on top.
+        // Dot layouts: one softly tinted background per view (no outline),
+        // view name on top.
         for cluster in &content.clusters {
-            let frame = gsk::RoundedRect::from_rect(
-                graphene::Rect::new(
-                    cluster.rect.x as f32,
-                    cluster.rect.y as f32,
-                    cluster.rect.w as f32,
-                    cluster.rect.h as f32,
-                ),
-                12.0,
-            );
-            snapshot.append_border(
-                &frame,
-                &[1.0, 1.0, 1.0, 1.0],
-                &[
-                    gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.35),
-                    gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.35),
-                    gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.35),
-                    gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.35),
-                ],
-            );
+            let frame = rounded(cluster.rect, 2.0 * CARD_RADIUS);
+            snapshot.push_rounded_clip(&frame);
+            snapshot.append_color(&alpha(0.05), frame.bounds());
+            snapshot.pop();
             let layout = self.create_pango_layout(Some(&cluster.view));
+            let mut bold = gtk::pango::FontDescription::new();
+            bold.set_weight(gtk::pango::Weight::Bold);
+            layout.set_font_description(Some(&bold));
             obstacles.push(Rect {
                 x: cluster.rect.x,
                 y: cluster.rect.y,
@@ -1399,7 +1561,6 @@ impl Canvas {
             .iter()
             .map(|n| (n.state_id.as_str(), n.rect))
             .collect();
-        let show_back = imp.show_back.get();
         let mut label_jobs: Vec<(EdgeGeometry, gtk::pango::Layout)> = Vec::new();
         for edge in content
             .edges
@@ -1410,6 +1571,12 @@ impl Canvas {
                 (rects.get(edge.from.as_str()), rects.get(edge.to.as_str()))
             else {
                 continue;
+            };
+            let in_focus = edge_in_focus(&edge.from, &edge.to, focus.as_deref());
+            let (line, width) = match (&focus, in_focus) {
+                (_, true) => (accent, 2.5),
+                (Some(_), false) => (faint, 1.5),
+                (None, _) => (line, 1.5),
             };
             let mut label_at: Option<(storybook_kit::model::GeoPoint, gtk::pango::Layout)> = None;
             if let Some(points) = chain_points(edge) {
@@ -1426,7 +1593,7 @@ impl Canvas {
                         triple[2].y as f32,
                     );
                 }
-                snapshot.append_stroke(&b.to_path(), &gsk::Stroke::new(2.0), &line);
+                snapshot.append_stroke(&b.to_path(), &gsk::Stroke::new(width), &line);
                 let ab = gsk::PathBuilder::new();
                 if let Some(arrow) = &edge.arrow {
                     let mut it = arrow.iter();
@@ -1448,7 +1615,7 @@ impl Canvas {
                     ab.close();
                     snapshot.append_fill(&ab.to_path(), gsk::FillRule::Winding, &line);
                 }
-                if let Some(label) = &edge.label
+                if let Some(label) = edge.label.as_ref().filter(|_| in_focus)
                     && let Some(lp) = edge.label_pos
                 {
                     let layout = self.create_pango_layout(Some(label));
@@ -1468,7 +1635,7 @@ impl Canvas {
                     g.end.0 as f32,
                     g.end.1 as f32,
                 );
-                snapshot.append_stroke(&b.to_path(), &gsk::Stroke::new(2.0), &line);
+                snapshot.append_stroke(&b.to_path(), &gsk::Stroke::new(width), &line);
 
                 let tri = arrow_triangle(g.end, g.c2);
                 let ab = gsk::PathBuilder::new();
@@ -1478,7 +1645,7 @@ impl Canvas {
                 ab.close();
                 snapshot.append_fill(&ab.to_path(), gsk::FillRule::Winding, &line);
 
-                if let Some(label) = &edge.label {
+                if let Some(label) = edge.label.as_ref().filter(|_| in_focus) {
                     // Placed after the nodes (collision-free), drawn last.
                     let layout = self.create_pango_layout(Some(label));
                     layout.set_width((LABEL_MAX_W as i32) * gtk::pango::SCALE);
@@ -1493,7 +1660,6 @@ impl Canvas {
                 pill(
                     snapshot,
                     &card,
-                    &dim,
                     Rect {
                         x: lp.x - (w as f64) / 2.0 - PILL_PAD,
                         y: lp.y - (h as f64) / 2.0 - PILL_PAD,
@@ -1506,21 +1672,19 @@ impl Canvas {
                     (lp.x - (w as f64) / 2.0) as f32,
                     (lp.y - (h as f64) / 2.0) as f32,
                 ));
-                snapshot.append_layout(&layout, &line);
+                snapshot.append_layout(&layout, &fg);
                 snapshot.restore();
             }
         }
 
-        // Nodes: live thumbnail + frame + state label.
+        // Nodes: card (shadow, no outline) + live thumbnail + state label.
         for n in &content.plan.nodes {
             let r = n.rect;
-            let nb = gsk::PathBuilder::new();
-            nb.move_to(r.x as f32, r.y as f32);
-            nb.line_to(r.max_x() as f32, r.y as f32);
-            nb.line_to(r.max_x() as f32, r.max_y() as f32);
-            nb.line_to(r.x as f32, r.max_y() as f32);
-            nb.close();
-            snapshot.append_stroke(&nb.to_path(), &gsk::Stroke::new(1.5), &dim);
+            let is_dimmed = dimmed(&n.state_id);
+            if is_dimmed {
+                snapshot.push_opacity(DIM_OPACITY);
+            }
+            node_card(snapshot, &card_fill, &shadow, r);
 
             // An expanded node's rect is taller than the thumbnail: the
             // extra height is the inline variant grid under the title strip.
@@ -1532,6 +1696,7 @@ impl Canvas {
             if let Some(paintable) = content.paintables.get(&n.state_id) {
                 // Letterbox: keep the story's aspect ratio inside the thumb.
                 let (tw, th) = fit_size(thumb.w, thumb.h, paintable.intrinsic_aspect_ratio());
+                snapshot.push_rounded_clip(&rounded(thumb, CARD_RADIUS));
                 snapshot.save();
                 snapshot.translate(&graphene::Point::new(
                     (thumb.x + (thumb.w - tw) / 2.0) as f32,
@@ -1539,6 +1704,7 @@ impl Canvas {
                 ));
                 paintable.snapshot(snapshot, tw, th);
                 snapshot.restore();
+                snapshot.pop();
             }
 
             let label = n
@@ -1557,42 +1723,19 @@ impl Canvas {
             snapshot.restore();
 
             if expanded {
-                // Opaque card behind the grid: during the animation the
-                // builtin edges cross it.
-                let grid = Rect {
-                    y: thumb.max_y() + TITLE_H,
-                    h: (r.max_y() - thumb.max_y() - TITLE_H).max(0.0),
-                    ..r
-                };
-                if grid.h > 0.0 {
-                    snapshot.append_color(
-                        &card,
-                        &graphene::Rect::new(
-                            grid.x as f32,
-                            grid.y as f32,
-                            grid.w as f32,
-                            grid.h as f32,
-                        ),
-                    );
-                }
-                let variant_ids: Vec<&str> = content
+                // the card under the whole grown rect backs the grid
+                let variant_geometry: Vec<&VariantGeometry> = content
                     .plan
                     .variants
                     .iter()
                     .filter(|v| v.variant_of == n.state_id)
-                    .map(|v| v.state_id.as_str())
                     .collect();
-                for (cell, variant_id) in variant_cells(r, n.variant_count).iter().zip(variant_ids)
+                for (cell, variant) in variant_cells(r, n.variant_count)
+                    .iter()
+                    .zip(variant_geometry)
                 {
                     obstacles.push(*cell);
-                    let cb = gsk::PathBuilder::new();
-                    cb.move_to(cell.x as f32, cell.y as f32);
-                    cb.line_to(cell.max_x() as f32, cell.y as f32);
-                    cb.line_to(cell.max_x() as f32, cell.max_y() as f32);
-                    cb.line_to(cell.x as f32, cell.max_y() as f32);
-                    cb.close();
-                    snapshot.append_stroke(&cb.to_path(), &gsk::Stroke::new(1.0), &dim);
-                    if let Some(paintable) = content.paintables.get(variant_id) {
+                    if let Some(paintable) = content.paintables.get(&variant.state_id) {
                         let (tw, th) = fit_size(
                             cell.w,
                             storybook_kit::dot::GRID_THUMB_H,
@@ -1606,7 +1749,14 @@ impl Canvas {
                         paintable.snapshot(snapshot, tw, th);
                         snapshot.restore();
                     }
-                    let vlabel = variant_id.rsplit('/').next().unwrap_or(variant_id);
+                    // authored variant title, else the classes part
+                    let vlabel = variant.title.as_deref().unwrap_or_else(|| {
+                        variant
+                            .state_id
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(variant.state_id.as_str())
+                    });
                     let layout = self.create_pango_layout(Some(vlabel));
                     layout.set_width((cell.w as i32) * gtk::pango::SCALE);
                     layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -1625,8 +1775,7 @@ impl Canvas {
                 let (w, h) = layout.pixel_size();
                 pill(
                     snapshot,
-                    &card,
-                    &dim,
+                    &accent,
                     Rect {
                         x: badge.max_x() - w as f64 - 2.0 * PILL_PAD,
                         y: badge.y,
@@ -1639,9 +1788,29 @@ impl Canvas {
                     (badge.max_x() - w as f64 - PILL_PAD) as f32,
                     (badge.y + PILL_PAD) as f32,
                 ));
-                snapshot.append_layout(&layout, &fg);
+                snapshot.append_layout(&layout, &gdk::RGBA::WHITE);
                 snapshot.restore();
             }
+            if is_dimmed {
+                snapshot.pop();
+            }
+        }
+
+        // Selection synced from the story list: accent frame on top of nodes.
+        if let Some(selected) = self.imp().selected.borrow().as_deref()
+            && let Some(h) =
+                highlight_rect(&content.plan, &self.imp().expanded.borrow(), selected)
+        {
+            let frame = gsk::RoundedRect::from_rect(
+                graphene::Rect::new(
+                    (h.x - 4.0) as f32,
+                    (h.y - 4.0) as f32,
+                    (h.w + 8.0) as f32,
+                    (h.h + 8.0) as f32,
+                ),
+                (CARD_RADIUS + 4.0) as f32,
+            );
+            snapshot.append_border(&frame, &[3.0; 4], &[accent; 4]);
         }
 
         // Edge labels: collision-free placement, opaque pills, on top.
@@ -1653,13 +1822,13 @@ impl Canvas {
             })
             .collect();
         for (rect, (_, layout)) in place_labels(&sized, &obstacles).iter().zip(&label_jobs) {
-            pill(snapshot, &card, &dim, *rect);
+            pill(snapshot, &card, *rect);
             snapshot.save();
             snapshot.translate(&graphene::Point::new(
                 (rect.x + PILL_PAD) as f32,
                 (rect.y + PILL_PAD) as f32,
             ));
-            snapshot.append_layout(layout, &line);
+            snapshot.append_layout(layout, &fg);
             snapshot.restore();
         }
 

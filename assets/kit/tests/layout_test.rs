@@ -6,7 +6,6 @@ mod common;
 
 use common::minihost_copy;
 use std::collections::BTreeMap;
-use storybook_kit::layout::layout;
 use storybook_kit::model::{
     Cell, Edge, Flows, Layout, NodePos, Terminal, TerminalKind, VariantPos,
 };
@@ -364,4 +363,54 @@ fn edges_and_nodes_stay_within_flow_nodes() {
         "{:?}",
         l.edges
     );
+}
+
+/// Four-arg shim: every older test passes no view titles.
+fn layout(
+    views: &[String],
+    cells: &[Cell],
+    flows: &Flows,
+    titles: &BTreeMap<String, String>,
+) -> Layout {
+    storybook_kit::layout::layout(views, cells, flows, titles, &BTreeMap::new())
+}
+
+#[test]
+fn view_and_variant_titles_are_carried_into_the_layout() {
+    let (views, cells, flows) = sample();
+    let titles = BTreeMap::from([
+        ("create/a".to_string(), "Start".to_string()),
+        ("create/a2".to_string(), "Bardzo długa lista".to_string()),
+    ]);
+    let view_titles = BTreeMap::from([("create".to_string(), "Nowy skill".to_string())]);
+    let l = storybook_kit::layout::layout(&views, &cells, &flows, &titles, &view_titles);
+    assert_eq!(
+        l.view_titles.get("create").map(String::as_str),
+        Some("Nowy skill")
+    );
+    assert_eq!(node(&l, "create/a").title.as_deref(), Some("Start"));
+    // a variant's title comes from the same [titles] map (its state id)
+    assert_eq!(
+        variant(&l, "create/a2").title.as_deref(),
+        Some("Bardzo długa lista")
+    );
+    // without authored titles nothing is invented
+    let bare =
+        storybook_kit::layout::layout(&views, &cells, &flows, &BTreeMap::new(), &BTreeMap::new());
+    assert!(bare.view_titles.is_empty());
+    assert!(variant(&bare, "create/a2").title.is_none());
+}
+
+#[test]
+fn old_layout_json_without_view_or_variant_titles_still_loads() {
+    let text = r#"{
+      "nodes": [{"state_id": "v/a", "lane": 0, "depth": 0, "order": 0,
+                 "self_actions": [], "variants": [], "variant_count": 0}],
+      "variants": [{"state_id": "v/a2", "variant_of": "v/a",
+                    "lane": 0, "depth": 0, "order": 0}],
+      "edges": []
+    }"#;
+    let l: Layout = serde_json::from_str(text).expect("old layout.json parses");
+    assert!(l.view_titles.is_empty());
+    assert!(l.variants[0].title.is_none());
 }

@@ -64,6 +64,10 @@ pub struct Finding {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StatesFile {
     pub view: String,
+    /// Optional display name of the view (sidebar, cluster labels);
+    /// `None` falls back to humanizing the view id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub budget: Option<u32>,
     #[serde(default)]
     pub classes: BTreeMap<String, Vec<String>>,
@@ -75,6 +79,10 @@ pub struct StatesFile {
     pub dispositions: BTreeMap<String, Disposition>,
     #[serde(default)]
     pub titles: BTreeMap<String, String>,
+    /// Human names for the story menu's dimension levels: key `"<axis>"`
+    /// names a dimension, `"<axis>.<class>"` one of its values.
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -217,6 +225,10 @@ pub struct Layout {
     /// View clusters (frames around one view's nodes); dot layouts only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clusters: Vec<ClusterPos>,
+    /// View id -> authored display name (`states/<view>.toml` `title`);
+    /// consumers fall back to humanizing the view id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub view_titles: BTreeMap<String, String>,
 }
 
 /// One journey-map node (= one flow node of `flows.toml`).
@@ -261,6 +273,9 @@ pub struct VariantPos {
     pub depth: u32,
     /// Stack index under the node (0 = directly below it).
     pub order: u32,
+    /// Human title of the variant (`states/<view>.toml` `[titles]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeRoute {

@@ -45,4 +45,4 @@ Finish with `sbk verify` (all gates, fresh fingerprints, deterministic `layout.j
 
 ## The viewer
 
-Run the shell (adapter gives the command): story list plus flow map, light/dark and width presets, double-click a node to interact with it full size. Spec: [canvas](references/canvas.md).
+Run the shell (adapter gives the command): one window — story menu, flow map and live preview of the selected state (light/dark and width presets); click a node or a menu row to select a state. Spec: [canvas](references/canvas.md).

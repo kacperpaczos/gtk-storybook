@@ -73,12 +73,14 @@ pub fn expand(inventory: &Inventory, states: &BTreeMap<String, StatesFile>) -> E
     for view in &inventory.views {
         let empty = StatesFile {
             view: view.id.clone(),
+            title: None,
             budget: None,
             classes: BTreeMap::new(),
             guards: Vec::new(),
             equivalences: Vec::new(),
             dispositions: BTreeMap::new(),
             titles: BTreeMap::new(),
+            labels: BTreeMap::new(),
         };
         let file = states.get(&view.id).unwrap_or(&empty);
         for unknown in file

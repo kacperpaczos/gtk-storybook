@@ -157,8 +157,13 @@ pub fn build_dot_with_sizes(
         if nodes.is_empty() {
             continue;
         }
+        // cluster label: the view's display name, else the view id
+        let label = placed
+            .view_titles
+            .get(view)
+            .map_or(view.as_str(), String::as_str);
         out.push_str(&format!("subgraph \"cluster_{}\" {{\n", escape_dot(view)));
-        out.push_str(&format!("label=\"{}\";\nmargin=20;\n", escape_dot(view)));
+        out.push_str(&format!("label=\"{}\";\nmargin=20;\n", escape_dot(label)));
         for node in nodes {
             let label = node.title.as_deref().unwrap_or(node.state_id.as_str());
             let attrs = match sizes.get(&node.state_id) {
@@ -514,8 +519,9 @@ pub fn layout_with_dot(
     cells: &[Cell],
     flows: &Flows,
     titles: &BTreeMap<String, String>,
+    view_titles: &BTreeMap<String, String>,
 ) -> Result<Layout, String> {
-    let placed = layout::layout(views_in_order, cells, flows, titles);
+    let placed = layout::layout(views_in_order, cells, flows, titles, view_titles);
     let source = build_dot(views_in_order, &placed);
     let json = run_dot(program, &source)?;
     let geo = parse_dot_json(&json).ok_or_else(|| "dot output not understood".to_string())?;
@@ -575,8 +581,14 @@ fn merge_dot_geometry(
                 .find(|v| c.nodes.iter().any(|n| view_of(n) == v.as_str()))
                 .cloned()
                 .unwrap_or_else(|| view_of(&c.nodes[0]));
+            // frame label: the view's display name, else the view id
+            let label = placed
+                .view_titles
+                .get(&view)
+                .cloned()
+                .unwrap_or_else(|| view.clone());
             ClusterPos {
-                label: view.clone(),
+                label,
                 view,
                 rect: c.rect,
             }
@@ -721,6 +733,7 @@ mod tests {
             engine: String::new(),
             dot_version: None,
             clusters: Vec::new(),
+            view_titles: BTreeMap::new(),
         };
         let src = build_dot(&views, &placed);
         let one = cluster_block(&src, "cluster_one");
@@ -833,6 +846,7 @@ mod tests {
             engine: String::new(),
             dot_version: None,
             clusters: Vec::new(),
+            view_titles: BTreeMap::new(),
         };
         let geo = geo_for_merge();
         let merged = merge_dot_geometry(

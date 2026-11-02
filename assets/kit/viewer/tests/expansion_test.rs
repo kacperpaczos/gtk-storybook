@@ -224,6 +224,7 @@ fn plan_expanded_shifts_everything_below_and_keeps_rows_apart() {
         storybook_kit::model::VariantPos {
             state_id: "v/a/v1".into(),
             variant_of: "v/a".into(),
+            title: None,
             lane: 0,
             depth: 0,
             order: 0,
@@ -231,6 +232,7 @@ fn plan_expanded_shifts_everything_below_and_keeps_rows_apart() {
         storybook_kit::model::VariantPos {
             state_id: "v/a/v2".into(),
             variant_of: "v/a".into(),
+            title: None,
             lane: 0,
             depth: 0,
             order: 1,
