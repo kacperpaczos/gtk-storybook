@@ -659,7 +659,7 @@ fn collect_types(
                         .variants
                         .iter()
                         .map(|v| RawVariant {
-                            name: v.ident.to_string(),
+                            name: enum_variant_wire_name(&e.attrs, &v.attrs, &v.ident),
                             payload: match &v.fields {
                                 Fields::Unnamed(fields) => match fields.unnamed.len() {
                                     1 => Some(RawPayload::One(
@@ -752,6 +752,107 @@ fn serde_limits(attrs: &[syn::Attribute]) -> Vec<String> {
         .filter(|needle| text.contains(*needle))
         .map(|needle| (*needle).to_string())
         .collect()
+}
+
+/// The enum-level `#[serde(rename_all = "…")]` casing, if present.
+fn serde_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs.iter().filter(|a| a.path().is_ident("serde")) {
+        let tokens = attr.to_token_stream().to_string();
+        let Some((_, style)) = tokens.split_once("rename_all") else {
+            continue;
+        };
+        let Some(style) = style.split('"').nth(1) else {
+            continue;
+        };
+        if !style.is_empty() {
+            return Some(style.to_string());
+        }
+    }
+    None
+}
+
+/// A variant's wire name: the enum-level `rename_all` casing applied to
+/// its identifier (serde renames every variant this way). A variant with
+/// its own `rename` keeps the identifier: the rename limit already flags
+/// the type, and a half-renamed skeleton would lie.
+fn enum_variant_wire_name(
+    enum_attrs: &[syn::Attribute],
+    variant_attrs: &[syn::Attribute],
+    ident: &syn::Ident,
+) -> String {
+    let Some(style) = serde_rename_all(enum_attrs) else {
+        return ident.to_string();
+    };
+    if serde_rename(variant_attrs).is_some() {
+        return ident.to_string();
+    }
+    let words: Vec<String> = split_words(&ident.to_string());
+    match style.as_str() {
+        "lowercase" => words.join("").to_lowercase(),
+        "UPPERCASE" => words.join("").to_uppercase(),
+        "PascalCase" => words.join(""),
+        "camelCase" => words
+            .first()
+            .map(|w| w.to_lowercase())
+            .into_iter()
+            .chain(words.iter().skip(1).cloned())
+            .collect::<Vec<_>>()
+            .join(""),
+        "snake_case" | "SCREAMING_SNAKE_CASE" => {
+            let joined = words.join("_");
+            if style == "snake_case" {
+                joined.to_lowercase()
+            } else {
+                joined.to_uppercase()
+            }
+        }
+        "kebab-case" => words.join("-").to_lowercase(),
+        "SCREAMING-KEBAB-CASE" => words.join("-").to_uppercase(),
+        // unknown style: serde rejects it at compile time; keep the
+        // identifier and let the rename limit flag the type
+        _ => ident.to_string(),
+    }
+}
+
+/// A variant-level `#[serde(rename = "…")]`, if present.
+fn serde_rename(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs.iter().filter(|a| a.path().is_ident("serde")) {
+        let tokens = attr.to_token_stream().to_string();
+        if let Some((_, rest)) = tokens.split_once("rename")
+            && !rest.trim_start().starts_with('_')
+            && let Some(name) = rest.trim_start_matches(['=', ' ']).split('"').nth(1)
+        {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Split a Rust identifier into its words: `_` separates explicitly,
+/// a lowercase→uppercase boundary separates camel humps.
+fn split_words(ident: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower = false;
+    for ch in ident.chars() {
+        if ch == '_' {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            prev_lower = false;
+        } else if ch.is_uppercase() && prev_lower {
+            words.push(std::mem::take(&mut current));
+            current.push(ch);
+            prev_lower = false;
+        } else {
+            prev_lower = ch.is_lowercase();
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
 }
 
 /// `#[serde(default)]` or `#[serde(default = "…")]`: the wire shape is

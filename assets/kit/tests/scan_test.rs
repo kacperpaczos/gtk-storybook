@@ -819,3 +819,57 @@ fn hidden_dirs_and_nested_worktrees_are_not_scanned() {
         "{json}"
     );
 }
+
+/// `#[serde(rename_all = "…")]` on an enum renames the wire variant names:
+/// fixtures carry the wire names (the host's real codec), so the recorded
+/// variant names — axis classes and skeleton values alike — must follow.
+#[test]
+fn enum_rename_all_gives_variants_their_wire_names() {
+    let dir = minihost_copy("scan-rename-all");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        r#"pub mod gtk { pub struct Widget; }
+pub mod panel;
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/panel.rs"),
+        r#"use crate::gtk::Widget;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstallMode {
+    Symlink,
+    Copy,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PanelVm {
+    pub mode: InstallMode,
+}
+
+pub struct PanelActions;
+
+pub fn build(vm: &PanelVm, _actions: &PanelActions) -> Widget {
+    let _ = &vm.mode;
+    Widget
+}
+"#,
+    )
+    .unwrap();
+    let inv = scan(&dir).inventory;
+    assert_eq!(
+        kinds_axes(&inv, "panel"),
+        owned(vec![(
+            "mode",
+            AxisKind::Enum {
+                variants: vec!["symlink".into(), "copy".into()],
+            },
+            vec!["symlink", "copy"],
+        )])
+    );
+    // a renamed unit enum is still cosmetic: no extractor-limit finding
+    assert!(findings(&inv, "panel", "extractor-limit").is_empty());
+}
