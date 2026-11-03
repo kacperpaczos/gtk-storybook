@@ -1991,4 +1991,69 @@ mod tests {
         )));
         assert!(!has_serde_default(&attrs("#[derive(Default)] struct A;")));
     }
+
+    fn variant_attrs_of(src: &str) -> Vec<syn::Attribute> {
+        let ast = syn::parse_str::<syn::DeriveInput>(src).unwrap();
+        let syn::Data::Enum(data) = ast.data else {
+            panic!("not an enum: {src}");
+        };
+        data.variants.into_iter().next().unwrap().attrs
+    }
+
+    fn wire_name(enum_src: &str, variant_src: &str, ident: &str) -> String {
+        let attrs = syn::parse_str::<syn::DeriveInput>(enum_src).unwrap().attrs;
+        let ident = syn::parse_str::<syn::Ident>(ident).unwrap();
+        enum_variant_wire_name(&attrs, &variant_attrs_of(variant_src), &ident)
+    }
+
+    #[test]
+    fn wire_names_follow_every_rename_all_style() {
+        let cases = [
+            ("lowercase", "copyall", "link", "copyall"),
+            ("UPPERCASE", "COPYALL", "LINK", "COPYALL"),
+            ("PascalCase", "CopyAll", "Link", "copyall"),
+            ("camelCase", "copyAll", "link", "copyall"),
+            ("snake_case", "copy_all", "link", "copy_all"),
+            ("SCREAMING_SNAKE_CASE", "COPY_ALL", "LINK", "COPY_ALL"),
+            ("kebab-case", "copy-all", "link", "copy-all"),
+            ("SCREAMING-KEBAB-CASE", "COPY-ALL", "LINK", "COPY-ALL"),
+        ];
+        for (style, multi, single, snake) in cases {
+            let src = format!("#[serde(rename_all = \"{style}\")] enum E {{ CopyAll, Link }}");
+            let variants = "enum E { CopyAll }".to_string();
+            assert_eq!(wire_name(&src, &variants, "CopyAll"), multi, "{style}");
+            assert_eq!(wire_name(&src, &variants, "Link"), single, "{style}");
+            // a snake_case ident restyles: PascalCase output differs from it
+            assert_eq!(wire_name(&src, &variants, "copy_all"), snake, "{style}");
+        }
+    }
+
+    #[test]
+    fn a_variant_with_its_own_rename_keeps_the_identifier() {
+        // the variant's `rename` wins over the enum's `rename_all` styling
+        // and the wire name falls back to the raw identifier
+        let src = "#[serde(rename_all = \"lowercase\")] enum E { #[serde(rename = \"on-the-wire\")] CopyAll }";
+        let variants = "enum E { #[serde(rename = \"on-the-wire\")] CopyAll }";
+        assert_eq!(wire_name(src, variants, "CopyAll"), "CopyAll");
+    }
+
+    #[test]
+    fn rename_all_on_a_variant_attr_is_not_a_rename() {
+        // no enum-level style: identifier untouched either way
+        let plain = "enum E { #[serde(rename_all = \"kebab-case\")] CopyAll }";
+        assert_eq!(wire_name(plain, plain, "CopyAll"), "CopyAll");
+        // with an enum-level style the enum style applies; the variant's
+        // rename_all is not a rename and must not short-circuit it
+        let styled = "#[serde(rename_all = \"snake_case\")] enum E { #[serde(rename_all = \"kebab-case\")] CopyAll }";
+        assert_eq!(wire_name(styled, styled, "CopyAll"), "copy_all");
+    }
+
+    #[test]
+    fn split_words_splits_on_underscores_and_humps() {
+        assert_eq!(split_words("CopyAll"), ["Copy", "All"]);
+        assert_eq!(split_words("copy_all"), ["copy", "all"]);
+        // empty runs (leading, doubled, trailing `_`) must yield no words
+        assert_eq!(split_words("_a__b_"), ["a", "b"]);
+        assert_eq!(split_words("_"), Vec::<String>::new());
+    }
 }
