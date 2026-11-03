@@ -786,31 +786,31 @@ fn enum_variant_wire_name(
     if serde_rename(variant_attrs).is_some() {
         return ident.to_string();
     }
-    let words: Vec<String> = split_words(&ident.to_string());
-    match style.as_str() {
-        "lowercase" => words.join("").to_lowercase(),
-        "UPPERCASE" => words.join("").to_uppercase(),
-        "PascalCase" => words.join(""),
-        "camelCase" => words
-            .first()
-            .map(|w| w.to_lowercase())
-            .into_iter()
-            .chain(words.iter().skip(1).cloned())
-            .collect::<Vec<_>>()
-            .join(""),
-        "snake_case" | "SCREAMING_SNAKE_CASE" => {
-            let joined = words.join("_");
-            if style == "snake_case" {
-                joined.to_lowercase()
-            } else {
-                joined.to_uppercase()
+    // serde_derive's `RenameRule::apply_to_variant`, character for
+    // character: variants are assumed PascalCase as written
+    let ident = ident.to_string();
+    let snake = || {
+        let mut out = String::new();
+        for (i, ch) in ident.char_indices() {
+            if i > 0 && ch.is_uppercase() {
+                out.push('_');
             }
+            out.push(ch.to_ascii_lowercase());
         }
-        "kebab-case" => words.join("-").to_lowercase(),
-        "SCREAMING-KEBAB-CASE" => words.join("-").to_uppercase(),
+        out
+    };
+    match style.as_str() {
+        "lowercase" => ident.to_ascii_lowercase(),
+        "UPPERCASE" => ident.to_ascii_uppercase(),
+        "PascalCase" => ident,
+        "camelCase" => ident[..1].to_ascii_lowercase() + &ident[1..],
+        "snake_case" => snake(),
+        "SCREAMING_SNAKE_CASE" => snake().to_ascii_uppercase(),
+        "kebab-case" => snake().replace('_', "-"),
+        "SCREAMING-KEBAB-CASE" => snake().to_ascii_uppercase().replace('_', "-"),
         // unknown style: serde rejects it at compile time; keep the
         // identifier and let the rename limit flag the type
-        _ => ident.to_string(),
+        _ => ident,
     }
 }
 
@@ -826,33 +826,6 @@ fn serde_rename(attrs: &[syn::Attribute]) -> Option<String> {
         }
     }
     None
-}
-
-/// Split a Rust identifier into its words: `_` separates explicitly,
-/// a lowercase→uppercase boundary separates camel humps.
-fn split_words(ident: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut current = String::new();
-    let mut prev_lower = false;
-    for ch in ident.chars() {
-        if ch == '_' {
-            if !current.is_empty() {
-                words.push(std::mem::take(&mut current));
-            }
-            prev_lower = false;
-        } else if ch.is_uppercase() && prev_lower {
-            words.push(std::mem::take(&mut current));
-            current.push(ch);
-            prev_lower = false;
-        } else {
-            prev_lower = ch.is_lowercase();
-            current.push(ch);
-        }
-    }
-    if !current.is_empty() {
-        words.push(current);
-    }
-    words
 }
 
 /// `#[serde(default)]` or `#[serde(default = "…")]`: the wire shape is
@@ -2009,10 +1982,10 @@ mod tests {
     #[test]
     fn wire_names_follow_every_rename_all_style() {
         let cases = [
-            ("lowercase", "copyall", "link", "copyall"),
-            ("UPPERCASE", "COPYALL", "LINK", "COPYALL"),
-            ("PascalCase", "CopyAll", "Link", "copyall"),
-            ("camelCase", "copyAll", "link", "copyall"),
+            ("lowercase", "copyall", "link", "copy_all"),
+            ("UPPERCASE", "COPYALL", "LINK", "COPY_ALL"),
+            ("PascalCase", "CopyAll", "Link", "copy_all"),
+            ("camelCase", "copyAll", "link", "copy_all"),
             ("snake_case", "copy_all", "link", "copy_all"),
             ("SCREAMING_SNAKE_CASE", "COPY_ALL", "LINK", "COPY_ALL"),
             ("kebab-case", "copy-all", "link", "copy-all"),
@@ -2023,7 +1996,8 @@ mod tests {
             let variants = "enum E { CopyAll }".to_string();
             assert_eq!(wire_name(&src, &variants, "CopyAll"), multi, "{style}");
             assert_eq!(wire_name(&src, &variants, "Link"), single, "{style}");
-            // a snake_case ident restyles: PascalCase output differs from it
+            // a snake_case ident: serde applies the rule per character,
+            // underscores are kept (no word model)
             assert_eq!(wire_name(&src, &variants, "copy_all"), snake, "{style}");
         }
     }
@@ -2046,14 +2020,5 @@ mod tests {
         // rename_all is not a rename and must not short-circuit it
         let styled = "#[serde(rename_all = \"snake_case\")] enum E { #[serde(rename_all = \"kebab-case\")] CopyAll }";
         assert_eq!(wire_name(styled, styled, "CopyAll"), "copy_all");
-    }
-
-    #[test]
-    fn split_words_splits_on_underscores_and_humps() {
-        assert_eq!(split_words("CopyAll"), ["Copy", "All"]);
-        assert_eq!(split_words("copy_all"), ["copy", "all"]);
-        // empty runs (leading, doubled, trailing `_`) must yield no words
-        assert_eq!(split_words("_a__b_"), ["a", "b"]);
-        assert_eq!(split_words("_"), Vec::<String>::new());
     }
 }
